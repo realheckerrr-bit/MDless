@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:tdlib/tdlib.dart';
 
 enum TdAuthState { unavailable, waitingParameters, waitingPhone, waitingCode, waitingPassword, waitingRegistration, waitingEmailAddress, waitingEmailCode, waitingOtherDeviceConfirmation, ready, error }
@@ -28,6 +29,20 @@ class TdlibGateway {
       return;
     }
     try {
+      // A reconnect must not leave an old receiver/client alive. This also
+      // makes retrying after a failed initialization deterministic.
+      if (_clientId != null) {
+        _receiver?.cancel();
+        TdPlugin.instance.tdJsonClientDestroy(_clientId!);
+        _clientId = null;
+        for (final pending in _pending.values) {
+          if (!pending.isCompleted) {
+            pending.completeError(StateError('TDLib client was reinitialized.'));
+          }
+        }
+        _pending.clear();
+      }
+
       // The tdlib Flutter package ships libtdjson.so under jniLibs, but its
       // Android plugin does not call System.loadLibrary. Open the packaged
       // ABI library explicitly instead of looking only in the Flutter process
@@ -35,11 +50,25 @@ class TdlibGateway {
       await TdPlugin.initialize(Platform.isAndroid ? 'libtdjson.so' : null);
       _clientId = TdPlugin.instance.tdJsonClientCreate();
       _receiver = Timer.periodic(const Duration(milliseconds: 120), (_) => _receive());
+
+      // Android's process working directory is read-only. TDLib expects real
+      // filesystem paths, so keep its database and downloaded files inside
+      // the app-private support directory instead of using relative paths.
+      final supportDirectory = await getApplicationSupportDirectory();
+      final databaseDirectory = Directory(
+        '${supportDirectory.path}${Platform.pathSeparator}mdless_tdlib',
+      );
+      final filesDirectory = Directory(
+        '${supportDirectory.path}${Platform.pathSeparator}mdless_files',
+      );
+      await databaseDirectory.create(recursive: true);
+      await filesDirectory.create(recursive: true);
+
       await request({
         '@type': 'setTdlibParameters',
         'use_test_dc': false,
-        'database_directory': 'mdless_tdlib',
-        'files_directory': 'mdless_files',
+        'database_directory': databaseDirectory.path,
+        'files_directory': filesDirectory.path,
         'database_encryption_key': '',
         'use_file_database': true,
         'use_chat_info_database': true,
