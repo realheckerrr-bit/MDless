@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -50,6 +52,7 @@ class MdlessPlugin {
     this.actions = const [],
     this.enabled = true,
     this.listener,
+    this.builtIn = true,
   });
 
   final String id;
@@ -62,6 +65,7 @@ class MdlessPlugin {
   final Set<MdlessPluginPermission> permissions;
   final List<MdlessPluginAction> actions;
   final MdlessPluginListener? listener;
+  final bool builtIn;
   bool enabled;
 }
 
@@ -112,8 +116,62 @@ class PluginEngine extends ChangeNotifier {
     for (final plugin in plugins) {
       plugin.enabled = prefs.getBool('plugin:${plugin.id}') ?? plugin.enabled;
     }
+    for (final key in prefs.getKeys().where((key) => key.startsWith('plugin-manifest:'))) {
+      final raw = prefs.getString(key);
+      if (raw == null) continue;
+      try {
+        final manifest = jsonDecode(raw);
+        if (manifest is Map<String, dynamic> && plugins.every((plugin) => plugin.id != manifest['id'])) {
+          plugins.add(_fromManifest(manifest, builtIn: false));
+        }
+      } catch (_) {
+        // Ignore a stale or malformed local manifest; it must not block login.
+      }
+    }
     notifyListeners();
   }
+
+  Future<void> installManifestJson(String source) async {
+    final decoded = jsonDecode(source);
+    if (decoded is! Map) throw const FormatException('A plugin manifest must be a JSON object.');
+    final manifest = Map<String, dynamic>.from(decoded);
+    final plugin = _fromManifest(manifest, builtIn: false);
+    if (plugin.id.isEmpty || plugin.name.isEmpty) throw const FormatException('Plugin id and name are required.');
+    if (plugin.builtIn) throw const FormatException('Built-in plugins cannot be installed over local manifests.');
+    final existing = plugins.indexWhere((item) => item.id == plugin.id);
+    if (existing >= 0 && plugins[existing].builtIn) throw const FormatException('That id belongs to an MDless built-in plugin.');
+    if (existing >= 0) plugins[existing] = plugin; else plugins.add(plugin);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('plugin-manifest:${plugin.id}', jsonEncode(manifestFor(plugin)));
+    notifyListeners();
+  }
+
+  Future<void> remove(String id) async {
+    final index = plugins.indexWhere((plugin) => plugin.id == id);
+    if (index < 0 || plugins[index].builtIn) return;
+    plugins.removeAt(index);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('plugin-manifest:$id');
+    await prefs.remove('plugin:$id');
+    notifyListeners();
+  }
+
+  Map<String, dynamic> manifestFor(MdlessPlugin plugin) => {
+        'id': plugin.id,
+        'name': plugin.name,
+        'description': plugin.description,
+        'version': plugin.version,
+        'author': plugin.author,
+        'icon': plugin.icon,
+        'accent': '#${plugin.accent.value.toRadixString(16).padLeft(8, '0')}',
+        'permissions': plugin.permissions.map((permission) => permission.name).toList(),
+        'actions': plugin.actions.map((action) => {
+              'id': action.id,
+              'label': action.label,
+              'icon': _iconName(action.icon),
+              'surface': action.surface.name,
+            }).toList(),
+      };
 
   List<MdlessPluginAction> actionsFor(MdlessPluginSurface surface) => [
     for (final plugin in plugins)
@@ -132,4 +190,68 @@ class PluginEngine extends ChangeNotifier {
     SharedPreferences.getInstance().then((prefs) => prefs.setBool('plugin:$id', plugin.enabled));
     notifyListeners();
   }
+
+  MdlessPlugin _fromManifest(Map<String, dynamic> manifest, {required bool builtIn}) {
+    final permissions = <MdlessPluginPermission>{};
+    final rawPermissions = manifest['permissions'];
+    if (rawPermissions is List) {
+      for (final raw in rawPermissions) {
+        final value = raw.toString();
+        for (final permission in MdlessPluginPermission.values) {
+          if (permission.name == value) permissions.add(permission);
+        }
+      }
+    }
+    final actions = <MdlessPluginAction>[];
+    final rawActions = manifest['actions'];
+    if (rawActions is List) {
+      for (final raw in rawActions.whereType<Map>()) {
+        final id = raw['id']?.toString().trim() ?? '';
+        final label = raw['label']?.toString().trim() ?? '';
+        final surfaceName = raw['surface']?.toString() ?? MdlessPluginSurface.chat.name;
+        final surface = MdlessPluginSurface.values.firstWhere((value) => value.name == surfaceName, orElse: () => MdlessPluginSurface.chat);
+        if (id.isNotEmpty && label.isNotEmpty) actions.add(MdlessPluginAction(id: id, label: label, icon: _iconForName(raw['icon']?.toString()), surface: surface));
+      }
+    }
+    return MdlessPlugin(
+      id: manifest['id']?.toString().trim() ?? '',
+      name: manifest['name']?.toString().trim() ?? '',
+      description: manifest['description']?.toString().trim() ?? 'Installed MDless plugin.',
+      icon: manifest['icon']?.toString() ?? '✦',
+      accent: _parseAccent(manifest['accent']),
+      version: manifest['version']?.toString() ?? '1.0.0',
+      author: manifest['author']?.toString() ?? 'Local plugin',
+      permissions: permissions,
+      actions: actions,
+      builtIn: builtIn,
+    );
+  }
+
+  Color _parseAccent(Object? raw) {
+    final value = raw?.toString().replaceFirst('#', '');
+    final parsed = value == null ? null : int.tryParse(value, radix: 16);
+    return parsed == null ? const Color(0xFF6750A4) : Color(parsed);
+  }
+
+  IconData _iconForName(String? name) => switch (name) {
+        'translate' => Icons.translate_rounded,
+        'link' => Icons.link_rounded,
+        'emoji' => Icons.emoji_emotions_rounded,
+        'focus' => Icons.center_focus_strong_rounded,
+        'settings' => Icons.settings_rounded,
+        'search' => Icons.search_rounded,
+        'download' => Icons.download_rounded,
+        _ => Icons.bolt_rounded,
+      };
+
+  String _iconName(IconData icon) => switch (icon) {
+        Icons.translate_rounded => 'translate',
+        Icons.link_rounded => 'link',
+        Icons.emoji_emotions_rounded => 'emoji',
+        Icons.center_focus_strong_rounded => 'focus',
+        Icons.settings_rounded => 'settings',
+        Icons.search_rounded => 'search',
+        Icons.download_rounded => 'download',
+        _ => 'bolt',
+      };
 }

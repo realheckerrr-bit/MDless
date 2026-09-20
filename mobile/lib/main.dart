@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1456,7 +1457,7 @@ class _SettingsPageState extends State<SettingsPage> {
       Text('Plugins', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
       const SizedBox(height: 8),
       ...controller.plugins.plugins.map((plugin) => Card(child: Padding(padding: const EdgeInsets.only(bottom: 10), child: Column(children: [
-        SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text('${plugin.description}\n${plugin.author} · v${plugin.version}')),
+        SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text('${plugin.description}\n${plugin.author} · v${plugin.version}'), trailing: plugin.builtIn ? null : IconButton(onPressed: () => controller.plugins.remove(plugin.id), icon: const Icon(Icons.delete_outline_rounded), tooltip: 'Remove plugin')),
         Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 4), child: Align(alignment: Alignment.centerLeft, child: Wrap(spacing: 6, runSpacing: 4, children: [
           ...plugin.permissions.map((permission) => Chip(avatar: const Icon(Icons.lock_outline_rounded, size: 14), label: Text(permission.label), visualDensity: VisualDensity.compact)),
           Chip(avatar: const Icon(Icons.bolt_rounded, size: 14), label: Text('${plugin.actions.length} actions'), visualDensity: VisualDensity.compact),
@@ -1464,9 +1465,24 @@ class _SettingsPageState extends State<SettingsPage> {
       ])))),
       const SizedBox(height: 16),
       Card(child: ListTile(leading: const Icon(Icons.extension_rounded), title: const Text('Native plugin SDK'), subtitle: const Text('Plugins declare permissions, actions, and update events. Compiled packages are registered with PluginEngine; untrusted downloaded code is never executed.'))),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(onPressed: () => _installPlugin(context, controller), icon: const Icon(Icons.file_open_rounded), label: const Text('Install plugin manifest')),
       const SizedBox(height: 12),
       OutlinedButton.icon(onPressed: controller.logOut, icon: const Icon(Icons.logout_rounded), label: const Text('Log out of Telegram')),
     ]);
+  }
+
+  Future<void> _installPlugin(BuildContext context, AppController controller) async {
+    final result = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['json'], withData: false);
+    if (result == null || result.files.isEmpty) return;
+    final path = result.files.single.path;
+    if (path == null || path.isEmpty) return;
+    try {
+      await controller.plugins.installManifestJson(await File(path).readAsString());
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Plugin manifest installed.')));
+    } catch (exception) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Plugin install failed: $exception')));
+    }
   }
 }
 

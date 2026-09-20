@@ -17,4 +17,24 @@ For a release build that starts already configured for Telegram, add `TELEGRAM_A
 
 The app contains the Material 3 Expressive shell, bundled Google Sans Flex typography, TDLib gateway, native Telegram login, settings-based plugin registry, per-chat appearance controls, Telegram audio playback, and private-call initiation with microphone permission. Flutter plugins are compiled into the app; arbitrary downloaded Dart code is intentionally not executed on-device. This keeps plugin permissions reviewable and compatible with Android app sandboxing.
 
+## Local plugin manifests
+
+Settings can install a JSON manifest from the device. Manifests declare metadata, permissions, and allowlisted UI actions; they do not execute downloaded code or receive raw network access.
+
+```json
+{
+  "id": "reading-mode",
+  "name": "Reading mode",
+  "description": "Add a reading action to chats.",
+  "version": "1.0.0",
+  "author": "Your name",
+  "icon": "R",
+  "accent": "#FF6750A4",
+  "permissions": ["messages"],
+  "actions": [
+    {"id": "read-chat", "label": "Open reading mode", "icon": "search", "surface": "chat"}
+  ]
+}
+```
+
 TDLib is Telegram's official cross-platform client library and handles encryption, local storage, asynchronous requests, and ordered updates. The Flutter binding currently needs native TDLib packaging for iOS, so Android is the first native target in this repository; iOS packaging is the next platform task.
