@@ -43,7 +43,11 @@ class _MdlessBootstrapState extends State<MdlessBootstrap> {
       themeMode: controller.darkMode ? ThemeMode.dark : ThemeMode.light,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
-      home: MdlessHome(controller: controller),
+      home: !controller.initialized
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : controller.signedIn
+              ? MdlessHome(controller: controller)
+              : LoginPage(controller: controller),
     ),
   );
 
@@ -107,8 +111,9 @@ class AppController extends ChangeNotifier {
   int? activeChatId;
   bool darkMode = false;
   bool initialized = false;
+  bool connecting = false;
   String search = '';
-  String authMessage = 'Demo mode — connect TDLib in Settings';
+  String authMessage = 'Sign in with your Telegram account to continue.';
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
@@ -121,7 +126,15 @@ class AppController extends ChangeNotifier {
     await plugins.restore();
     initialized = true;
     notifyListeners();
+    final savedApiId = prefs.getString('telegram-api-id');
+    final savedApiHash = prefs.getString('telegram-api-hash');
+    if (savedApiId != null && savedApiHash != null && savedApiId.isNotEmpty && savedApiHash.isNotEmpty) {
+      await connect(savedApiId, savedApiHash);
+    }
   }
+
+  TdAuthState get authState => gateway.authState;
+  bool get signedIn => gateway.isAuthenticated;
 
   List<ChatPreview> get filteredChats => chats.where((chat) => chat.name.toLowerCase().contains(search.toLowerCase()) || chat.preview.toLowerCase().contains(search.toLowerCase())).toList();
   ChatPreview get activeChat => chats.firstWhere((chat) => chat.id == activeChatId);
@@ -140,17 +153,58 @@ class AppController extends ChangeNotifier {
 
   Future<void> connect(String apiIdText, String apiHash) async {
     final apiId = int.tryParse(apiIdText.trim()) ?? 0;
+    if (apiId == 0 || apiHash.trim().isEmpty) {
+      authMessage = 'Enter a valid Telegram API ID and API hash first.';
+      notifyListeners();
+      return;
+    }
+    connecting = true;
     authMessage = 'Starting secure Telegram connection…';
     notifyListeners();
-    await gateway.initialize(apiId: apiId, apiHash: apiHash.trim());
-    authMessage = gateway.error ?? 'TDLib is ready — enter your phone number.';
-    if (gateway.authState == TdAuthState.ready) await loadRemoteChats();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('telegram-api-id', apiId.toString());
+      await prefs.setString('telegram-api-hash', apiHash.trim());
+      await gateway.initialize(apiId: apiId, apiHash: apiHash.trim());
+      authMessage = gateway.error ?? 'TDLib is ready — enter your phone number.';
+      if (gateway.authState == TdAuthState.ready) await loadRemoteChats();
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    } finally {
+      connecting = false;
+    }
     notifyListeners();
   }
 
-  Future<void> authenticatePhone(String phone) async { await gateway.sendPhone(phone); authMessage = 'Code sent to Telegram.'; notifyListeners(); }
-  Future<void> authenticateCode(String code) async { await gateway.sendCode(code); authMessage = 'Code accepted. Complete 2FA if requested.'; notifyListeners(); }
-  Future<void> authenticatePassword(String password) async { await gateway.sendPassword(password); authMessage = 'Password accepted.'; notifyListeners(); }
+  Future<void> authenticatePhone(String phone) async {
+    try {
+      await gateway.sendPhone(phone.trim());
+      authMessage = 'Code sent. Check Telegram or your SMS messages.';
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    }
+    notifyListeners();
+  }
+
+  Future<void> authenticateCode(String code) async {
+    try {
+      await gateway.sendCode(code.trim());
+      authMessage = 'Code accepted. Continue with your 2FA password if requested.';
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    }
+    notifyListeners();
+  }
+
+  Future<void> authenticatePassword(String password) async {
+    try {
+      await gateway.sendPassword(password);
+      authMessage = 'Signed in. Loading your Telegram chats…';
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    }
+    notifyListeners();
+  }
 
   Future<void> loadRemoteChats() async {
     if (!gateway.isAvailable) return;
@@ -187,7 +241,10 @@ class AppController extends ChangeNotifier {
   void customize(int chatId, ChatCustomization value) { customizations[chatId] = value; SharedPreferences.getInstance().then((prefs) { prefs.setInt('chat:$chatId:accent', value.accent.value); prefs.setBool('chat:$chatId:compact', value.compact); prefs.setBool('chat:$chatId:dots', value.dottedWallpaper); }); notifyListeners(); }
 
   void _handleUpdate(Map<String, dynamic> update) {
-    if (update['@type'] == 'updateAuthorizationState') { notifyListeners(); }
+    if (update['@type'] == 'updateAuthorizationState') {
+      if (gateway.isAuthenticated) unawaited(loadRemoteChats());
+      notifyListeners();
+    }
     if (update['@type'] == 'updateNewMessage') { notifyListeners(); }
   }
 
@@ -195,6 +252,161 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() { _updates?.cancel(); gateway.dispose(); plugins.dispose(); super.dispose(); }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({required this.controller, super.key});
+  final AppController controller;
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final apiId = TextEditingController();
+  final apiHash = TextEditingController();
+  final phone = TextEditingController();
+  final code = TextEditingController();
+  final password = TextEditingController();
+  final firstName = TextEditingController();
+  final lastName = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (!mounted) return;
+      apiId.text = prefs.getString('telegram-api-id') ?? '';
+      apiHash.text = prefs.getString('telegram-api-hash') ?? '';
+    });
+  }
+
+  @override
+  void dispose() {
+    apiId.dispose(); apiHash.dispose(); phone.dispose(); code.dispose(); password.dispose(); firstName.dispose(); lastName.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final state = controller.authState;
+    final hasClient = controller.gateway.isAvailable;
+    final needsApi = !hasClient && !controller.connecting;
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 30, 24, 36),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Container(
+                  width: 78, height: 78,
+                  decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer, borderRadius: BorderRadius.circular(26)),
+                  child: Icon(Icons.forum_rounded, size: 42, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                ),
+                const SizedBox(height: 24),
+                Text('Welcome to MDless', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, letterSpacing: -1)),
+                const SizedBox(height: 8),
+                Text('A native Telegram client with your chats, privacy, and plugins on-device.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.4)),
+                const SizedBox(height: 28),
+                if (needsApi) ...[
+                  _sectionTitle(context, 'Connect to Telegram'),
+                  const SizedBox(height: 10),
+                  Text('Create an API ID and hash at my.telegram.org. They are stored only on this device.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  const SizedBox(height: 18),
+                  TextField(controller: apiId, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Telegram API ID', prefixIcon: Icon(Icons.numbers_rounded))),
+                  const SizedBox(height: 12),
+                  TextField(controller: apiHash, obscureText: true, decoration: const InputDecoration(labelText: 'Telegram API hash', prefixIcon: Icon(Icons.key_rounded))),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(onPressed: controller.connecting ? null : () => controller.connect(apiId.text, apiHash.text), icon: const Icon(Icons.lock_open_rounded), label: const Text('Continue securely')),
+                ] else if (controller.connecting) ...[
+                  const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator())),
+                  Text(controller.authMessage, textAlign: TextAlign.center),
+                ] else ...[
+                  _authStep(context, controller, state),
+                ],
+                if (controller.authMessage.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(controller.authMessage, textAlign: TextAlign.center, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                ],
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _authStep(BuildContext context, AppController controller, TdAuthState state) {
+    switch (state) {
+      case TdAuthState.waitingPhone:
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          _sectionTitle(context, 'Your phone number'),
+          const SizedBox(height: 8),
+          const Text('Use the international format, for example +1 555 123 4567.'),
+          const SizedBox(height: 16),
+          TextField(controller: phone, autofocus: true, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone number', prefixIcon: Icon(Icons.phone_rounded))),
+          const SizedBox(height: 16),
+          FilledButton(onPressed: () => controller.authenticatePhone(phone.text), child: const Text('Send login code')),
+        ]);
+      case TdAuthState.waitingCode:
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          _sectionTitle(context, 'Enter the login code'),
+          const SizedBox(height: 8),
+          const Text('Telegram sent a code to one of your authorized devices or by SMS.'),
+          const SizedBox(height: 16),
+          TextField(controller: code, autofocus: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Login code', prefixIcon: Icon(Icons.password_rounded))),
+          const SizedBox(height: 16),
+          FilledButton(onPressed: () => controller.authenticateCode(code.text), child: const Text('Verify code')),
+        ]);
+      case TdAuthState.waitingPassword:
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          _sectionTitle(context, 'Two-step verification'),
+          const SizedBox(height: 8),
+          const Text('Your Telegram account has an additional password.'),
+          const SizedBox(height: 16),
+          TextField(controller: password, autofocus: true, obscureText: true, decoration: const InputDecoration(labelText: '2FA password', prefixIcon: Icon(Icons.shield_rounded))),
+          const SizedBox(height: 16),
+          FilledButton(onPressed: () => controller.authenticatePassword(password.text), child: const Text('Sign in')),
+        ]);
+      case TdAuthState.waitingRegistration:
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          _sectionTitle(context, 'Create your Telegram profile'),
+          const SizedBox(height: 16),
+          TextField(controller: firstName, autofocus: true, decoration: const InputDecoration(labelText: 'First name')),
+          const SizedBox(height: 12),
+          TextField(controller: lastName, decoration: const InputDecoration(labelText: 'Last name (optional)')),
+          const SizedBox(height: 16),
+          FilledButton(onPressed: () async { try { await controller.gateway.registerUser(firstName: firstName.text.trim(), lastName: lastName.text.trim()); } catch (exception) { controller.authMessage = exception.toString(); controller.notifyListeners(); } }, child: const Text('Create account')),
+        ]);
+      case TdAuthState.waitingEmailAddress:
+        return _emailStep(controller, false);
+      case TdAuthState.waitingEmailCode:
+        return _emailStep(controller, true);
+      case TdAuthState.waitingOtherDeviceConfirmation:
+        return const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Confirm this login from your other Telegram device.')));
+      case TdAuthState.ready:
+        return const Center(child: CircularProgressIndicator());
+      default:
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Text('Telegram needs a connection to continue.', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 12),
+          FilledButton(onPressed: () => setState(() {}), child: const Text('Try again')),
+        ]);
+    }
+  }
+
+  Widget _emailStep(AppController controller, bool codeStep) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    _sectionTitle(context, codeStep ? 'Email verification code' : 'Telegram email verification'),
+    const SizedBox(height: 16),
+    TextField(controller: codeStep ? code : phone, keyboardType: codeStep ? TextInputType.number : TextInputType.emailAddress, decoration: InputDecoration(labelText: codeStep ? 'Email code' : 'Email address', prefixIcon: Icon(codeStep ? Icons.password_rounded : Icons.email_rounded))),
+    const SizedBox(height: 16),
+    FilledButton(onPressed: () async { try { if (codeStep) { await controller.gateway.sendEmailCode(code.text.trim()); } else { await controller.gateway.sendEmailAddress(phone.text.trim()); } } catch (exception) { controller.authMessage = exception.toString(); controller.notifyListeners(); } }, child: Text(codeStep ? 'Verify email code' : 'Send email code')),
+  ]);
+
+  Widget _sectionTitle(BuildContext context, String title) => Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800));
 }
 
 class MdlessHome extends StatefulWidget {

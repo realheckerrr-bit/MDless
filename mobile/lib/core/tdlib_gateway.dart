@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:tdlib/tdlib.dart';
 
-enum TdAuthState { unavailable, waitingParameters, waitingPhone, waitingCode, waitingPassword, ready, error }
+enum TdAuthState { unavailable, waitingParameters, waitingPhone, waitingCode, waitingPassword, waitingRegistration, waitingEmailAddress, waitingEmailCode, waitingOtherDeviceConfirmation, ready, error }
 
 class TdlibGateway {
   TdlibGateway();
@@ -18,6 +18,7 @@ class TdlibGateway {
 
   Stream<Map<String, dynamic>> get updates => _updates.stream;
   bool get isAvailable => _clientId != null;
+  bool get isAuthenticated => authState == TdAuthState.ready;
 
   Future<void> initialize({required int apiId, required String apiHash}) async {
     if (apiId == 0 || apiHash.isEmpty) {
@@ -81,6 +82,18 @@ class TdlibGateway {
     await request({'@type': 'checkAuthenticationPassword', 'password': password});
   }
 
+  Future<void> registerUser({required String firstName, required String lastName}) async {
+    await request({'@type': 'registerUser', 'first_name': firstName, 'last_name': lastName});
+  }
+
+  Future<void> sendEmailAddress(String email) async {
+    await request({'@type': 'setAuthenticationEmailAddress', 'email_address': email});
+  }
+
+  Future<void> sendEmailCode(String code) async {
+    await request({'@type': 'checkAuthenticationEmailCode', 'code': {'@type': 'emailAddressAuthenticationCode', 'code': code}});
+  }
+
   Future<List<Map<String, dynamic>>> loadChats() async {
     await request({'@type': 'loadChats', 'chat_list': {'@type': 'chatListMain'}, 'limit': 100});
     final response = await request({'@type': 'getChats', 'chat_list': {'@type': 'chatListMain'}, 'limit': 100});
@@ -110,7 +123,12 @@ class TdlibGateway {
       final update = Map<String, dynamic>.from(jsonDecode(raw) as Map);
       final extra = update['@extra']?.toString();
       if (extra != null && _pending.containsKey(extra)) {
-        _pending.remove(extra)!.complete(update);
+        final pending = _pending.remove(extra)!;
+        if (update['@type'] == 'error') {
+          pending.completeError(StateError('${update['code'] ?? 'TDLib error'}: ${update['message'] ?? 'Unknown Telegram error'}'));
+        } else {
+          pending.complete(update);
+        }
       }
       if (update['@type'] == 'updateAuthorizationState') {
         final type = update['authorization_state']?['@type'];
@@ -119,6 +137,10 @@ class TdlibGateway {
           'authorizationStateWaitPhoneNumber' => TdAuthState.waitingPhone,
           'authorizationStateWaitCode' => TdAuthState.waitingCode,
           'authorizationStateWaitPassword' => TdAuthState.waitingPassword,
+          'authorizationStateWaitRegistration' => TdAuthState.waitingRegistration,
+          'authorizationStateWaitEmailAddress' => TdAuthState.waitingEmailAddress,
+          'authorizationStateWaitEmailCode' => TdAuthState.waitingEmailCode,
+          'authorizationStateWaitOtherDeviceConfirmation' => TdAuthState.waitingOtherDeviceConfirmation,
           'authorizationStateReady' => TdAuthState.ready,
           _ => authState,
         };
