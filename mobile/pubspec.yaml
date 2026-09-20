@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   shared_preferences: ^2.5.3
-  tdlib: ^1.8.15
+  tdlib: ^1.6.0
 
 dev_dependencies:
   flutter_test:
