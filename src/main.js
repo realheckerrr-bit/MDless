@@ -1,3 +1,5 @@
+import { TelegramApiClient } from './core/api-client.js';
+
 const icon = (value, label = '') => `<span class="icon" aria-hidden="true">${value}</span>${label ? `<span>${label}</span>` : ''}`;
 
 const seedChats = [
@@ -33,12 +35,47 @@ const seedMessages = {
 
 class TelegramGateway {
   constructor() {
-    this.connected = true;
+    this.api = new TelegramApiClient();
+    this.mode = 'demo';
+    this.connected = false;
+    this.unsubscribe = null;
   }
 
-  async sendMessage(chatId, text) {
+  async health() {
+    const result = await this.api.health();
+    this.connected = result.status === 'authorized';
+    return result;
+  }
+
+  async connect(url) {
+    this.api.setBaseUrl(url);
+    const result = await this.health();
+    this.mode = 'gateway';
+    return result;
+  }
+
+  async startAuth(phone) { return this.api.authStart(phone); }
+  async submitCode(code) { return this.api.authCode(code); }
+  async submitPassword(password) { return this.api.authPassword(password); }
+  async logout() { const result = await this.api.logout(); this.connected = false; return result; }
+  async loadDialogs() { return (await this.api.dialogs()).dialogs; }
+  async loadMessages(peer) { return (await this.api.messages(peer)).messages; }
+
+  async sendMessage(chatId, text, replyTo) {
+    if (this.mode === 'gateway' && this.connected) {
+      const result = await this.api.sendMessage(chatId, text, replyTo);
+      return { id: result.id, author: 'You', initials: 'YO', color: 'violet', text: result.text, time: 'now', incoming: false, reactions: [] };
+    }
     await new Promise((resolve) => setTimeout(resolve, 260));
     return { id: Date.now(), author: 'You', initials: 'YO', color: 'violet', text, time: 'now', incoming: false, reactions: [] };
+  }
+
+  subscribe() {
+    if (this.unsubscribe || this.mode !== 'gateway') return;
+    this.unsubscribe = this.api.subscribe((update) => {
+      if (update.type !== 'new_message' || !update.message) return;
+      toast('New Telegram message');
+    }, () => {});
   }
 }
 
@@ -46,7 +83,9 @@ class PluginManager {
   constructor() {
     this.plugins = new Map();
     this.storageKey = 'mdless:plugins';
+    this.sourceKey = 'mdless:plugin-sources';
     this.persisted = JSON.parse(localStorage.getItem(this.storageKey) || '{}');
+    this.sources = JSON.parse(localStorage.getItem(this.sourceKey) || '{}');
   }
 
   register(plugin) {
@@ -70,6 +109,36 @@ class PluginManager {
     const action = plugin?.actions?.find((entry) => entry.id === actionId);
     if (plugin?.enabled && action?.run) action.run(context);
   }
+
+  async installFile(file) {
+    const source = await file.text();
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    try {
+      const module = await import(url);
+      const plugin = module.default || module.plugin;
+      if (!plugin?.id || !plugin?.name) throw new Error('Plugin must export an object with id and name.');
+      this.register(plugin);
+      this.sources[plugin.id] = source;
+      localStorage.setItem(this.sourceKey, JSON.stringify(this.sources));
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async restoreInstalled() {
+    for (const source of Object.values(this.sources)) {
+      const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      try {
+        const module = await import(url);
+        const plugin = module.default || module.plugin;
+        if (plugin?.id && plugin?.name) this.register(plugin);
+      } catch (error) {
+        console.warn('MDless plugin could not be restored', error);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+  }
 }
 
 const gateway = new TelegramGateway();
@@ -81,10 +150,16 @@ const state = {
   query: '',
   detailsOpen: false,
   pluginsOpen: false,
+  settingsOpen: false,
+  settingsTab: 'account',
+  gatewayStatus: 'demo',
+  gatewayUrl: localStorage.getItem('mdless:gateway') || 'http://localhost:8787',
+  authStatus: 'offline',
   theme: localStorage.getItem('mdless:theme') || 'light',
   focusMode: false,
   composer: '',
   replyTo: null,
+  chatPrefs: JSON.parse(localStorage.getItem('mdless:chat-prefs') || '{}'),
 };
 
 const context = () => ({
@@ -117,6 +192,9 @@ function initialsAvatar(initials, color, extra = '') {
 function render() {
   document.documentElement.dataset.theme = state.theme;
   document.documentElement.dataset.focus = state.focusMode ? 'true' : 'false';
+  const activePrefs = state.chatPrefs[state.activeChat] || {};
+  document.documentElement.dataset.chatDensity = activePrefs.density || 'comfortable';
+  document.documentElement.dataset.chatWallpaper = activePrefs.wallpaper || 'plain';
   const chat = state.chats.find((entry) => entry.id === state.activeChat);
   const messages = state.messages[state.activeChat] || [];
   const visibleChats = state.chats.filter((entry) => `${entry.name} ${entry.preview}`.toLowerCase().includes(state.query.toLowerCase()));
@@ -130,6 +208,7 @@ function render() {
         <button class="rail-button" data-action="saved" aria-label="Saved messages">${icon('✦')}<span>Saved</span></button>
       </div>
       <div class="rail-bottom">
+        <button class="rail-button" data-action="settings" aria-label="Open settings">${icon('S')}<span>Settings</span></button>
         <button class="rail-button" data-action="plugins" aria-label="Open plugins">${icon('⌘')}<span>Plugins</span></button>
         <button class="rail-button" data-action="theme" aria-label="Toggle theme">${icon(state.theme === 'light' ? '☾' : '☀')}<span>${state.theme === 'light' ? 'Night' : 'Day'}</span></button>
         <button class="avatar avatar-violet profile-button" data-action="profile" aria-label="Open profile">AM</button>
@@ -158,6 +237,7 @@ function render() {
     </main>
     ${state.detailsOpen ? detailsPanel(chat) : ''}
     ${state.pluginsOpen ? pluginsPanel() : ''}
+    ${state.settingsOpen ? settingsPanel(chat) : ''}
   `;
   bindEvents();
   document.querySelector('#message-stage')?.scrollTo({ top: 99999 });
@@ -179,6 +259,42 @@ function pluginsPanel() {
   return `<aside class="plugins-panel"><div class="details-top"><div><p class="eyebrow">Extend MDless</p><h2>Plugin shelf</h2></div><button class="icon-button" data-action="plugins" aria-label="Close plugins">×</button></div><div class="plugin-hero"><span class="hero-spark">✦</span><div><strong>Make it yours</strong><p>Small tools, thoughtfully placed.</p></div></div><div class="plugin-list">${pluginManager.all().map((plugin) => `<div class="plugin-card"><div class="plugin-icon plugin-${plugin.accent}">${plugin.icon}</div><div class="plugin-card-copy"><div><strong>${plugin.name}</strong><span class="version">v${plugin.version}</span></div><p>${plugin.description}</p><button class="text-button" data-plugin-action="${plugin.id}" data-plugin-command="${plugin.actions?.[0]?.id || ''}">${plugin.actions?.[0]?.label || 'Open'}</button></div><button class="toggle ${plugin.enabled ? 'on' : ''}" data-plugin-toggle="${plugin.id}" aria-label="Toggle ${plugin.name}"><i></i></button></div>`).join('')}</div><button class="browse-button" data-action="browse-plugins">${icon('＋')} Browse plugin directory</button></aside>`;
 }
 
+function settingsPanel(chat) {
+  const prefs = state.chatPrefs[state.activeChat] || {};
+  return `<div class="settings-scrim" data-action="settings"></div><aside class="settings-panel">
+    <div class="details-top"><div><p class="eyebrow">MDless control room</p><h2>Settings</h2></div><button class="icon-button" data-action="settings" aria-label="Close settings">×</button></div>
+    <div class="settings-tabs"><button class="settings-tab ${state.settingsTab === 'account' ? 'selected' : ''}" data-settings-tab="account">Account</button><button class="settings-tab ${state.settingsTab === 'plugins' ? 'selected' : ''}" data-settings-tab="plugins">Plugins</button><button class="settings-tab ${state.settingsTab === 'chat' ? 'selected' : ''}" data-settings-tab="chat">This chat</button></div>
+    ${state.settingsTab === 'account' ? accountSettings() : state.settingsTab === 'plugins' ? pluginSettings() : chatSettings(chat, prefs)}
+  </aside>`;
+}
+
+function accountSettings() {
+  const status = state.authStatus || 'demo';
+  return `<section class="settings-section"><div class="connection-card"><span class="status-dot ${status === 'authorized' ? '' : 'muted'}"></span><div><strong>${status === 'authorized' ? 'Telegram connected' : 'Demo mode'}</strong><p>${status === 'authorized' ? 'Live MTProto updates are enabled.' : 'Start the local gateway to use your Telegram account.'}</p></div></div>
+    <label class="setting-field"><span>Gateway URL</span><input id="gateway-url" value="${escapeHtml(state.gatewayUrl)}" placeholder="http://localhost:8787" /></label>
+    <label class="setting-field"><span>Gateway token</span><input id="gateway-token" type="password" value="${escapeHtml(gateway.api.token)}" placeholder="Only if your gateway requires it" /></label>
+    <button class="wide-button primary-button" data-action="check-gateway">Check gateway</button>
+    <div class="setting-divider"><span>Sign in to Telegram</span></div>
+    <label class="setting-field"><span>Phone number</span><input id="auth-phone" inputmode="tel" placeholder="+1 555 000 0000" /></label>
+    <button class="wide-button" data-action="auth-start">Send login code</button>
+    <label class="setting-field"><span>Login code</span><input id="auth-code" inputmode="numeric" placeholder="12345" /></label>
+    <button class="wide-button" data-action="auth-code">Verify code</button>
+    <label class="setting-field"><span>2FA password</span><input id="auth-password" type="password" placeholder="Optional Telegram password" /></label>
+    <button class="wide-button" data-action="auth-password">Verify 2FA</button>
+    <button class="text-button danger-button" data-action="auth-logout">Log out and remove local session</button>
+    <p class="settings-note">API credentials stay on the gateway. Your Telegram session is stored in the gateway data directory, never in the public PWA.</p>
+  </section>`;
+}
+
+function pluginSettings() {
+  return `<section class="settings-section"><p class="settings-intro">Plugins run locally in the client and can add commands, message actions, settings, and chat tools. Only install code you trust.</p><div class="plugin-settings-list">${pluginManager.all().map((plugin) => `<div class="plugin-setting-row"><div class="plugin-icon plugin-${plugin.accent}">${plugin.icon}</div><div><strong>${plugin.name}</strong><p>${plugin.description}</p></div><button class="toggle ${plugin.enabled ? 'on' : ''}" data-plugin-toggle="${plugin.id}" aria-label="Toggle ${plugin.name}"><i></i></button></div>`).join('')}</div><label class="wide-button file-button">Install local plugin<input id="plugin-file" type="file" accept=".js,text/javascript" /></label><button class="wide-button" data-action="browse-plugins">Browse plugin directory</button></section>`;
+}
+
+function chatSettings(chat, prefs) {
+  const colors = ['violet', 'coral', 'blue', 'mint', 'amber', 'teal'];
+  return `<section class="settings-section"><div class="chat-settings-heading">${initialsAvatar(chat.initials, chat.color, 'large-avatar')}<div><strong>${chat.name}</strong><p>Local appearance only</p></div></div><p class="settings-label">Accent color</p><div class="color-picker">${colors.map((color) => `<button class="color-swatch swatch-${color} ${prefs.color === color ? 'selected' : ''}" data-chat-color="${color}" aria-label="Use ${color}"></button>`).join('')}</div><p class="settings-label">Message density</p><div class="segmented"><button class="${prefs.density !== 'compact' ? 'selected' : ''}" data-chat-density="comfortable">Comfortable</button><button class="${prefs.density === 'compact' ? 'selected' : ''}" data-chat-density="compact">Compact</button></div><p class="settings-label">Wallpaper</p><div class="segmented"><button class="${prefs.wallpaper !== 'dots' ? 'selected' : ''}" data-chat-wallpaper="plain">Plain</button><button class="${prefs.wallpaper === 'dots' ? 'selected' : ''}" data-chat-wallpaper="dots">Soft dots</button></div><div class="permission-row"><span><span class="icon">B</span><span>Blur media previews</span></span><span class="toggle on"><i></i></span></div><button class="wide-button" data-action="reset-chat-style">Reset chat style</button></section>`;
+}
+
 function formatText(text) { return escapeHtml(text).replace(/\*([^*]+)\*/g, '<em>$1</em>'); }
 function escapeHtml(value) { return String(value).replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char])); }
 
@@ -190,6 +306,32 @@ function bindEvents() {
   document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => handleAction(button.dataset.action, button)));
   document.querySelectorAll('[data-plugin-toggle]').forEach((button) => button.addEventListener('click', () => { pluginManager.toggle(button.dataset.pluginToggle); toast('Plugin settings updated'); render(); }));
   document.querySelectorAll('[data-plugin-action]').forEach((button) => button.addEventListener('click', () => pluginManager.dispatch(button.dataset.pluginAction, button.dataset.pluginCommand, context())));
+  document.querySelector('#plugin-file')?.addEventListener('change', async (event) => { const file = event.target.files?.[0]; if (!file) return; try { await pluginManager.installFile(file); toast('Plugin installed'); render(); } catch (error) { toast(error.message); } });
+  document.querySelectorAll('[data-settings-tab]').forEach((button) => button.addEventListener('click', () => { state.settingsTab = button.dataset.settingsTab; render(); }));
+  document.querySelectorAll('[data-chat-color]').forEach((button) => button.addEventListener('click', () => updateChatPref('color', button.dataset.chatColor)));
+  document.querySelectorAll('[data-chat-density]').forEach((button) => button.addEventListener('click', () => updateChatPref('density', button.dataset.chatDensity)));
+  document.querySelectorAll('[data-chat-wallpaper]').forEach((button) => button.addEventListener('click', () => updateChatPref('wallpaper', button.dataset.chatWallpaper)));
+}
+
+function updateChatPref(key, value) {
+  state.chatPrefs[state.activeChat] = { ...(state.chatPrefs[state.activeChat] || {}), [key]: value };
+  localStorage.setItem('mdless:chat-prefs', JSON.stringify(state.chatPrefs));
+  render();
+}
+
+async function syncRemoteState() {
+  const dialogs = await gateway.loadDialogs();
+  if (!dialogs.length) return;
+  const colors = ['violet', 'coral', 'blue', 'mint', 'amber', 'teal'];
+  state.chats = dialogs.map((dialog, index) => {
+    const name = dialog.name || 'Telegram chat';
+    const initials = name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+    return { id: String(dialog.id), name, initials, color: colors[index % colors.length], kind: 'person', online: false, unread: dialog.unread || 0, preview: dialog.draft || 'No recent message', time: '', pinned: false };
+  });
+  state.activeChat = state.chats[0].id;
+  const messages = await gateway.loadMessages(state.activeChat);
+  state.messages[state.activeChat] = messages.reverse().map((message) => ({ id: message.id, author: message.out ? 'You' : state.chats[0].name, initials: message.out ? 'YO' : state.chats[0].initials, color: message.out ? 'violet' : state.chats[0].color, text: message.text, time: message.date ? new Date(message.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '', incoming: !message.out, reactions: [] }));
+  render();
 }
 
 function handleAction(action, source) {
@@ -202,6 +344,12 @@ function handleAction(action, source) {
   if (action === 'call') toast('Voice and video calls will connect through the Telegram gateway');
   if (action === 'search-chat') toast('Search this conversation');
   if (action === 'settings') toast('Settings are coming into the plugin surface');
+  if (action === 'settings') { state.settingsOpen = !state.settingsOpen; state.pluginsOpen = false; render(); }
+  if (action === 'check-gateway') { state.gatewayUrl = document.querySelector('#gateway-url')?.value.trim() || state.gatewayUrl; localStorage.setItem('mdless:gateway', state.gatewayUrl); gateway.api.setToken(document.querySelector('#gateway-token')?.value.trim()); gateway.connect(state.gatewayUrl).then((result) => { state.authStatus = result.status; state.gatewayStatus = 'gateway'; gateway.subscribe(); if (result.status === 'authorized') syncRemoteState().catch((error) => toast(error.message)); toast(result.status === 'authorized' ? 'Telegram gateway connected' : `Gateway ready: ${result.status}`); render(); }).catch((error) => toast(error.message)); }
+  if (action === 'auth-start') { const phone = document.querySelector('#auth-phone')?.value.trim(); gateway.startAuth(phone).then((result) => { state.authStatus = result.status; toast('Login code requested'); render(); }).catch((error) => toast(error.message)); }
+  if (action === 'auth-code') { const code = document.querySelector('#auth-code')?.value.trim(); gateway.submitCode(code).then((result) => { state.authStatus = result.status; toast('Code submitted'); render(); setTimeout(() => gateway.api.authStatus().then((status) => { state.authStatus = status.status; if (status.status === 'authorized') { gateway.connected = true; gateway.subscribe(); syncRemoteState().catch((error) => toast(error.message)); } render(); }).catch(() => {}), 1800); }).catch((error) => toast(error.message)); }
+  if (action === 'auth-password') { const password = document.querySelector('#auth-password')?.value; gateway.submitPassword(password).then((result) => { state.authStatus = result.status; gateway.connected = result.status === 'authorized'; gateway.subscribe(); if (result.status === 'authorized') syncRemoteState().catch((error) => toast(error.message)); toast('Password submitted'); render(); }).catch((error) => toast(error.message)); }
+  if (action === 'auth-logout') { gateway.logout().then((result) => { state.authStatus = result.status; state.gatewayStatus = 'demo'; toast('Local Telegram session removed'); render(); }).catch((error) => toast(error.message)); }
   if (action === 'mute') toast('Notifications muted for this conversation');
   if (action === 'browse-plugins') toast('Plugin directory connection is ready to add');
   if (action === 'reaction') toast('Reaction added');
@@ -211,6 +359,9 @@ function handleAction(action, source) {
   if (action === 'home' || action === 'chats') { state.activeChat = 'design'; state.detailsOpen = false; state.pluginsOpen = false; render(); }
   if (action === 'contacts') toast('Contacts will sync through the Telegram gateway');
   if (action === 'saved') { state.activeChat = 'notes'; render(); }
+  if (action === 'reset-chat-style') { delete state.chatPrefs[state.activeChat]; localStorage.setItem('mdless:chat-prefs', JSON.stringify(state.chatPrefs)); render(); }
 }
 
 render();
+pluginManager.restoreInstalled().then(() => render()).catch(() => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});

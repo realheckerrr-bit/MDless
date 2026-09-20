@@ -1,0 +1,11 @@
+{
+  "name": "MDless Telegram Client",
+  "short_name": "MDless",
+  "description": "A calm, expressive, plugin-first Telegram client.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fbf8ff",
+  "theme_color": "#6750a4",
+  "orientation": "portrait-primary",
+  "icons": [{ "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

@@ -1,12 +1,21 @@
 {
   "name": "mdless",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "MDless — an expressive Material 3 Telegram client shell with a plugin-first architecture.",
+  "description": "MDless - a mobile-first Telegram client with MTProto, expressive Material 3 UI, and plugins.",
   "type": "module",
   "scripts": {
-    "dev": "python -m http.server 4173",
-    "start": "python -m http.server 4173"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "gateway": "node server/index.mjs",
+    "start": "node server/index.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "vite": "^7.1.7"
+  }
 }
