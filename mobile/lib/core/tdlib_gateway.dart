@@ -114,6 +114,30 @@ class TdlibGateway {
     await request({'@type': 'sendMessage', 'chat_id': chatId, 'input_message_content': {'@type': 'inputMessageText', 'text': {'@type': 'formattedText', 'text': text, 'entities': []}}});
   }
 
+  Future<String?> downloadFile(int fileId) async {
+    await request({'@type': 'downloadFile', 'file_id': fileId, 'priority': 32, 'offset': 0, 'limit': 0, 'synchronous': true});
+    for (var attempt = 0; attempt < 60; attempt++) {
+      final file = await request({'@type': 'getFile', 'file_id': fileId});
+      final local = file['local'];
+      if (local is Map && local['is_downloading_completed'] == true && (local['path']?.toString().isNotEmpty ?? false)) {
+        return local['path'].toString();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>> createCall({required int userId, bool video = false}) => request({
+        '@type': 'createCall',
+        'user_id': userId,
+        'protocol': {'@type': 'callProtocol', 'udp_p2p': true, 'udp_reflector': true, 'min_layer': 65, 'max_layer': 92, 'library_versions': []},
+        'is_video': video,
+      });
+
+  Future<void> acceptCall(int callId) async => request({'@type': 'acceptCall', 'call_id': callId, 'protocol': {'@type': 'callProtocol', 'udp_p2p': true, 'udp_reflector': true, 'min_layer': 65, 'max_layer': 92, 'library_versions': []}});
+
+  Future<void> discardCall(int callId) async => request({'@type': 'discardCall', 'call_id': callId, 'is_disconnected': false, 'invite_link': false, 'duration': 0, 'is_video': false, 'connection_id': 0});
+
   void _receive() {
     final clientId = _clientId;
     if (clientId == null) return;

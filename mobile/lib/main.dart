@@ -1,9 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/chat_customizations.dart';
+import 'core/music_player.dart';
 import 'core/plugin_engine.dart';
 import 'core/tdlib_gateway.dart';
 
@@ -57,7 +60,8 @@ class _MdlessBootstrapState extends State<MdlessBootstrap> {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
-      fontFamily: 'sans',
+      textTheme: GoogleFonts.googleSansFlexTextTheme(ThemeData(brightness: brightness).textTheme),
+      fontFamily: GoogleFonts.googleSansFlex().fontFamily,
       appBarTheme: AppBarTheme(backgroundColor: scheme.surface, elevation: 0, centerTitle: false),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: scheme.surfaceContainer,
@@ -76,10 +80,13 @@ class _MdlessBootstrapState extends State<MdlessBootstrap> {
 }
 
 class AppController extends ChangeNotifier {
-  AppController() : gateway = TdlibGateway(), plugins = PluginEngine();
+  AppController() : gateway = TdlibGateway(), plugins = PluginEngine(), music = MusicPlayerController() {
+    music.addListener(notifyListeners);
+  }
 
   final TdlibGateway gateway;
   final PluginEngine plugins;
+  final MusicPlayerController music;
   final chats = <ChatPreview>[
     ChatPreview(id: 1, name: 'MD3 Design Club', initials: 'MD', preview: 'Mira: the new motion spec is feeling ✨', time: '09:42', unread: 4, color: Color(0xFFFFB7A8), members: '8,240 members'),
     ChatPreview(id: 2, name: 'Sasha Volkov', initials: 'SV', preview: 'You: Sounds perfect — see you there!', time: '09:17', unread: 0, color: Color(0xFFD6C7FF), online: true),
@@ -114,10 +121,14 @@ class AppController extends ChangeNotifier {
   bool connecting = false;
   String search = '';
   String authMessage = 'Sign in with your Telegram account to continue.';
+  String emojiStyle = 'Telegram iOS';
+  String iconPack = 'Material You';
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
     darkMode = prefs.getBool('dark-mode') ?? false;
+    emojiStyle = prefs.getString('emoji-style') ?? 'Telegram iOS';
+    iconPack = prefs.getString('icon-pack') ?? 'Material You';
     for (final chat in chats) {
       final accent = prefs.getInt('chat:${chat.id}:accent');
       if (accent != null) customizations[chat.id] = ChatCustomization(accent: Color(accent), compact: prefs.getBool('chat:${chat.id}:compact') ?? false, dottedWallpaper: prefs.getBool('chat:${chat.id}:dots') ?? false);
@@ -148,6 +159,20 @@ class AppController extends ChangeNotifier {
     darkMode = !darkMode;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('dark-mode', darkMode);
+    notifyListeners();
+  }
+
+  Future<void> setEmojiStyle(String value) async {
+    emojiStyle = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('emoji-style', value);
+    notifyListeners();
+  }
+
+  Future<void> setIconPack(String value) async {
+    iconPack = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('icon-pack', value);
     notifyListeners();
   }
 
@@ -242,7 +267,9 @@ class AppController extends ChangeNotifier {
         ..clear()
         ..addAll(remote.map((chat) {
           final title = (chat['title'] ?? 'Telegram chat').toString();
-          return ChatPreview(id: chat['id'] as int, name: title, initials: _initials(title), preview: 'Telegram conversation', time: '', unread: chat['unread_count'] as int? ?? 0, color: const Color(0xFFD6C7FF));
+          final type = chat['type'];
+          final userId = type is Map && type['@type'] == 'chatTypePrivate' ? type['user_id'] as int? : null;
+          return ChatPreview(id: chat['id'] as int, name: title, initials: _initials(title), preview: 'Telegram conversation', time: '', unread: chat['unread_count'] as int? ?? 0, color: const Color(0xFFD6C7FF), userId: userId);
         }));
       notifyListeners();
     } catch (exception) { authMessage = exception.toString(); notifyListeners(); }
@@ -260,12 +287,50 @@ class AppController extends ChangeNotifier {
     if (!gateway.isAvailable || activeChatId == null || gateway.authState != TdAuthState.ready) return;
     try {
       final remote = await gateway.loadMessages(activeChatId!);
-      messages[activeChatId!] = remote.reversed.map((message) => MdMessage(author: message['is_outgoing'] == true ? 'You' : activeChat.name, initials: message['is_outgoing'] == true ? 'YO' : activeChat.initials, text: message['content']?['text']?['text']?.toString() ?? '', time: '', incoming: message['is_outgoing'] != true, color: activeChat.color)).toList();
+      messages[activeChatId!] = remote.reversed.map((message) {
+        final content = message['content'] as Map?;
+        final type = content?['@type']?.toString();
+        final audio = type == 'messageAudio' ? content?['audio'] as Map? : null;
+        final audioFile = audio?['audio'] as Map?;
+        final audioId = audioFile?['id'] as int?;
+        final text = type == 'messageText' ? content?['text']?['text']?.toString() ?? '' : audio != null ? '${audio['performer'] ?? ''} ${audio['title'] ?? 'Audio'}'.trim() : 'Telegram attachment';
+        return MdMessage(author: message['is_outgoing'] == true ? 'You' : activeChat.name, initials: message['is_outgoing'] == true ? 'YO' : activeChat.initials, text: text, time: '', incoming: message['is_outgoing'] != true, color: activeChat.color, audioFileId: audioId, audioTitle: audio?['title']?.toString(), audioPerformer: audio?['performer']?.toString());
+      }).toList();
       notifyListeners();
     } catch (_) {}
   }
 
   void customize(int chatId, ChatCustomization value) { customizations[chatId] = value; SharedPreferences.getInstance().then((prefs) { prefs.setInt('chat:$chatId:accent', value.accent.value); prefs.setBool('chat:$chatId:compact', value.compact); prefs.setBool('chat:$chatId:dots', value.dottedWallpaper); }); notifyListeners(); }
+
+  Future<void> playAudio(MdMessage message) async {
+    final fileId = message.audioFileId;
+    if (fileId == null || !gateway.isAuthenticated) return;
+    try {
+      final path = await gateway.downloadFile(fileId);
+      if (path != null) await music.playFile(id: fileId, path: path, trackTitle: message.audioTitle ?? message.text, trackPerformer: message.audioPerformer);
+    } catch (exception) {
+      authMessage = 'Audio error: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> startVoiceCall(ChatPreview chat) async {
+    final userId = chat.userId;
+    if (userId == null || !gateway.isAuthenticated) return;
+    final microphone = await Permission.microphone.request();
+    if (!microphone.isGranted) {
+      authMessage = 'Microphone permission is required for Telegram calls.';
+      notifyListeners();
+      return;
+    }
+    try {
+      await gateway.createCall(userId: userId);
+      authMessage = 'Calling ${chat.name}…';
+    } catch (exception) {
+      authMessage = 'Call error: $exception';
+    }
+    notifyListeners();
+  }
 
   void _handleUpdate(Map<String, dynamic> update) {
     if (update['@type'] == 'updateAuthorizationState') {
@@ -278,7 +343,7 @@ class AppController extends ChangeNotifier {
   String _initials(String title) => title.split(RegExp(r'\s+')).take(2).map((part) => part.isEmpty ? '' : part[0]).join().toUpperCase();
 
   @override
-  void dispose() { _updates?.cancel(); gateway.dispose(); plugins.dispose(); super.dispose(); }
+  void dispose() { _updates?.cancel(); music.removeListener(notifyListeners); music.dispose(); gateway.dispose(); plugins.dispose(); super.dispose(); }
 }
 
 class LoginPage extends StatefulWidget {
@@ -451,13 +516,13 @@ class _MdlessHomeState extends State<MdlessHome> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     return AnimatedBuilder(
-      animation: Listenable.merge([controller, controller.plugins]),
+      animation: Listenable.merge([controller, controller.plugins, controller.music]),
       builder: (context, _) {
         if (controller.activeChatId != null) return ChatPage(controller: controller, chat: controller.activeChat, onBack: controller.clearChat);
         return Scaffold(
           appBar: AppBar(title: Text(tab == 0 ? 'Messages' : tab == 1 ? 'Saved' : 'Settings', style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.5)), actions: [IconButton(onPressed: controller.toggleTheme, icon: Icon(controller.darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded))]),
           body: IndexedStack(index: tab, children: [ChatsPage(controller: controller), SavedPage(controller: controller), SettingsPage(controller: controller)]),
-          bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (value) => setState(() => tab = value), destinations: const [NavigationDestination(icon: Icon(Icons.forum_outlined), selectedIcon: Icon(Icons.forum_rounded), label: 'Chats'), NavigationDestination(icon: Icon(Icons.star_border_rounded), selectedIcon: Icon(Icons.star_rounded), label: 'Saved'), NavigationDestination(icon: Icon(Icons.tune_rounded), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings')]),
+          bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [if (controller.music.hasTrack) MusicMiniPlayer(player: controller.music), NavigationBar(selectedIndex: tab, onDestinationSelected: (value) => setState(() => tab = value), destinations: const [NavigationDestination(icon: Icon(Icons.forum_outlined), selectedIcon: Icon(Icons.forum_rounded), label: 'Chats'), NavigationDestination(icon: Icon(Icons.star_border_rounded), selectedIcon: Icon(Icons.star_rounded), label: 'Saved'), NavigationDestination(icon: Icon(Icons.tune_rounded), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings')])]),
         );
       },
     );
@@ -474,6 +539,22 @@ class ChatsPage extends StatelessWidget {
     Expanded(child: ListView.separated(padding: const EdgeInsets.fromLTRB(12, 0, 12, 20), itemCount: controller.filteredChats.length, separatorBuilder: (_, __) => const SizedBox(height: 4), itemBuilder: (context, index) { final chat = controller.filteredChats[index]; return ChatTile(chat: chat, onTap: () { controller.selectChat(chat.id); controller.loadActiveMessages(); }); })),
   ]));
 }
+
+class MusicMiniPlayer extends StatelessWidget {
+  const MusicMiniPlayer({required this.player, super.key});
+  final MusicPlayerController player;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        child: ListTile(
+          dense: true,
+          leading: const CircleAvatar(child: Icon(Icons.music_note_rounded)),
+          title: Text(player.title ?? 'Telegram audio', maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(player.performer ?? 'MDless player', maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: IconButton(onPressed: player.toggle, icon: Icon(player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded)),
+        ),
+      );
 
 class SavedPage extends StatelessWidget {
   const SavedPage({required this.controller, super.key});
@@ -521,6 +602,7 @@ class _ChatPageState extends State<ChatPage> {
           ]),
         ]),
         actions: [
+          if (widget.chat.userId != null) IconButton(onPressed: () => controller.startVoiceCall(widget.chat), icon: const Icon(Icons.call_outlined)),
           IconButton(onPressed: () => showChatCustomization(context, controller, widget.chat), icon: const Icon(Icons.palette_outlined)),
           IconButton(onPressed: () {}, icon: const Icon(Icons.more_vert_rounded)),
         ],
@@ -539,6 +621,7 @@ class _ChatPageState extends State<ChatPage> {
                 itemBuilder: (context, index) => MessageBubble(
                   message: controller.activeMessages[controller.activeMessages.length - 1 - index],
                   compact: prefs.compact,
+                  onAudioTap: controller.playAudio,
                 ),
               ),
             ),
@@ -582,11 +665,19 @@ class Composer extends StatelessWidget {
 }
 
 class MessageBubble extends StatelessWidget {
-  const MessageBubble({required this.message, required this.compact, super.key});
+  const MessageBubble({required this.message, required this.compact, required this.onAudioTap, super.key});
   final MdMessage message;
   final bool compact;
+  final ValueChanged<MdMessage> onAudioTap;
   @override
-  Widget build(BuildContext context) { final scheme = Theme.of(context).colorScheme; final color = message.incoming ? scheme.surfaceContainerHigh : scheme.primaryContainer; return Align(alignment: message.incoming ? Alignment.centerLeft : Alignment.centerRight, child: Padding(padding: EdgeInsets.only(bottom: compact ? 5 : 12), child: Row(mainAxisAlignment: message.incoming ? MainAxisAlignment.start : MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.end, children: [if (message.incoming) Padding(padding: const EdgeInsets.only(right: 7), child: CircleAvatar(radius: 15, backgroundColor: message.color, child: Text(message.initials, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800))),), Flexible(child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.only(topLeft: const Radius.circular(20), topRight: const Radius.circular(20), bottomLeft: Radius.circular(message.incoming ? 5 : 20), bottomRight: Radius.circular(message.incoming ? 20 : 5))), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(message.text), const SizedBox(height: 4), Row(mainAxisSize: MainAxisSize.min, children: [Text(message.time, style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)), if (message.reactions.isNotEmpty) ...[const SizedBox(width: 8), Text(message.reactions.join('  '), style: const TextStyle(fontSize: 11))]])]))),]))); }
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = message.incoming ? scheme.surfaceContainerHigh : scheme.primaryContainer;
+    final content = message.audioFileId != null
+        ? InkWell(onTap: () => onAudioTap(message), borderRadius: BorderRadius.circular(14), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.audio_file_rounded, color: scheme.primary), const SizedBox(width: 10), Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(message.audioTitle ?? message.text, style: const TextStyle(fontWeight: FontWeight.w700)), if (message.audioPerformer != null) Text(message.audioPerformer!, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant))]))]))
+        : Text(message.text);
+    return Align(alignment: message.incoming ? Alignment.centerLeft : Alignment.centerRight, child: Padding(padding: EdgeInsets.only(bottom: compact ? 5 : 12), child: Row(mainAxisAlignment: message.incoming ? MainAxisAlignment.start : MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.end, children: [if (message.incoming) Padding(padding: const EdgeInsets.only(right: 7), child: CircleAvatar(radius: 15, backgroundColor: message.color, child: Text(message.initials, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800)))), Flexible(child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.only(topLeft: const Radius.circular(20), topRight: const Radius.circular(20), bottomLeft: Radius.circular(message.incoming ? 5 : 20), bottomRight: Radius.circular(message.incoming ? 20 : 5))), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [content, const SizedBox(height: 4), Row(mainAxisSize: MainAxisSize.min, children: [Text(message.time, style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)), if (message.reactions.isNotEmpty) ...[const SizedBox(width: 8), Text(message.reactions.join('  '), style: const TextStyle(fontSize: 11))]])])))]));
+  }
 }
 
 class SettingsPage extends StatefulWidget {
@@ -599,13 +690,53 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final apiId = TextEditingController();
   final apiHash = TextEditingController();
-  final phone = TextEditingController();
-  final code = TextEditingController();
-  final password = TextEditingController();
+
   @override
-  void dispose() { apiId.dispose(); apiHash.dispose(); phone.dispose(); code.dispose(); password.dispose(); super.dispose(); }
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (!mounted) return;
+      apiId.text = prefs.getString('telegram-api-id') ?? '';
+      apiHash.text = prefs.getString('telegram-api-hash') ?? '';
+    });
+  }
+
   @override
-  Widget build(BuildContext context) { final controller = widget.controller; return ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 36), children: [Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Telegram connection', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)), const SizedBox(height: 7), Text(controller.authMessage, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)), const SizedBox(height: 14), TextField(controller: apiId, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'API ID')), const SizedBox(height: 10), TextField(controller: apiHash, obscureText: true, decoration: const InputDecoration(labelText: 'API hash')), const SizedBox(height: 12), FilledButton.icon(onPressed: () => controller.connect(apiId.text, apiHash.text), icon: const Icon(Icons.lock_open_rounded), label: const Text('Initialize TDLib')), const SizedBox(height: 12), TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone number')), Row(children: [Expanded(child: OutlinedButton(onPressed: () => controller.authenticatePhone(phone.text), child: const Text('Send code'))), const SizedBox(width: 8), Expanded(child: TextField(controller: code, decoration: const InputDecoration(labelText: 'Code')))]), const SizedBox(height: 8), Row(children: [Expanded(child: OutlinedButton(onPressed: () => controller.authenticateCode(code.text), child: const Text('Verify code'))), const SizedBox(width: 8), Expanded(child: TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: '2FA password')))]), const SizedBox(height: 8), OutlinedButton(onPressed: () => controller.authenticatePassword(password.text), child: const Text('Verify password'))]))), const SizedBox(height: 16), Text('Plugins', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)), const SizedBox(height: 8), ...controller.plugins.plugins.map((plugin) => Card(child: SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text(plugin.description)))), const SizedBox(height: 16), Card(child: ListTile(leading: const Icon(Icons.extension_rounded), title: const Text('Native plugin SDK'), subtitle: const Text('Plugins are compiled Flutter packages registered with PluginEngine. This keeps mobile permissions explicit and safe.')))]); }
+  void dispose() { apiId.dispose(); apiHash.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    return ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 36), children: [
+      Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Telegram connection', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 7),
+        Text(controller.authMessage, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 14),
+        TextField(controller: apiId, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'API ID')),
+        const SizedBox(height: 10),
+        TextField(controller: apiHash, obscureText: true, decoration: const InputDecoration(labelText: 'API hash')),
+        const SizedBox(height: 12),
+        FilledButton.icon(onPressed: () => controller.connect(apiId.text, apiHash.text), icon: const Icon(Icons.lock_open_rounded), label: const Text('Reconnect TDLib')),
+      ]))),
+      const SizedBox(height: 16),
+      Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Appearance packs', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(value: controller.emojiStyle, decoration: const InputDecoration(labelText: 'Emoji style'), items: const [DropdownMenuItem(value: 'Telegram iOS', child: Text('Telegram iOS')), DropdownMenuItem(value: 'Google Noto', child: Text('Google Noto')), DropdownMenuItem(value: 'Samsung', child: Text('Samsung'))], onChanged: (value) { if (value != null) controller.setEmojiStyle(value); }),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(value: controller.iconPack, decoration: const InputDecoration(labelText: 'Icon pack'), items: const [DropdownMenuItem(value: 'Material You', child: Text('Material You')), DropdownMenuItem(value: 'Telegram Classic', child: Text('Telegram Classic')), DropdownMenuItem(value: 'Expressive Rounded', child: Text('Expressive Rounded'))], onChanged: (value) { if (value != null) controller.setIconPack(value); }),
+        const SizedBox(height: 8),
+        Text('Emoji and icon packs are selected per device and do not change Telegram server data.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+      ]))),
+      const SizedBox(height: 16),
+      Text('Plugins', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+      const SizedBox(height: 8),
+      ...controller.plugins.plugins.map((plugin) => Card(child: SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text(plugin.description)))),
+      const SizedBox(height: 16),
+      Card(child: ListTile(leading: const Icon(Icons.extension_rounded), title: const Text('Native plugin SDK'), subtitle: const Text('Plugins are compiled Flutter packages registered with PluginEngine. This keeps mobile permissions explicit and safe.'))),
+    ]);
+  }
 }
 
 Future<void> showChatCustomization(BuildContext context, AppController controller, ChatPreview chat) async { final current = controller.customizations[chat.id] ?? const ChatCustomization(); var value = current; await showModalBottomSheet<void>(context: context, showDragHandle: true, builder: (context) => StatefulBuilder(builder: (context, setState) => Padding(padding: const EdgeInsets.fromLTRB(20, 4, 20, 30), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Customize ${chat.name}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)), const SizedBox(height: 18), const Text('Accent color'), const SizedBox(height: 8), Wrap(spacing: 10, children: [Color(0xFF6750A4), Color(0xFF006B5F), Color(0xFF246A9C), Color(0xFF8D5A00), Color(0xFFBA1A1A)].map((color) => InkWell(onTap: () => setState(() => value = value.copyWith(accent: color)), borderRadius: BorderRadius.circular(99), child: CircleAvatar(radius: 18, backgroundColor: color, child: value.accent == color ? const Icon(Icons.check, color: Colors.white, size: 18) : null))).toList()), SwitchListTile(contentPadding: EdgeInsets.zero, value: value.compact, onChanged: (v) => setState(() => value = value.copyWith(compact: v)), title: const Text('Compact messages')), SwitchListTile(contentPadding: EdgeInsets.zero, value: value.dottedWallpaper, onChanged: (v) => setState(() => value = value.copyWith(dottedWallpaper: v)), title: const Text('Soft dot wallpaper')), FilledButton(onPressed: () { controller.customize(chat.id, value); Navigator.pop(context); }, child: const Text('Save chat style'))])))); }
@@ -618,7 +749,7 @@ class Avatar extends StatelessWidget {
 }
 
 class ChatPreview {
-  ChatPreview({required this.id, required this.name, required this.initials, required this.preview, required this.time, required this.unread, required this.color, this.members, this.online = false});
+  ChatPreview({required this.id, required this.name, required this.initials, required this.preview, required this.time, required this.unread, required this.color, this.members, this.online = false, this.userId});
   final int id;
   final String name;
   final String initials;
@@ -628,10 +759,11 @@ class ChatPreview {
   final Color color;
   final String? members;
   final bool online;
+  final int? userId;
 }
 
 class MdMessage {
-  MdMessage({required this.author, required this.initials, required this.text, required this.time, required this.incoming, required this.color, this.reactions = const []});
+  MdMessage({required this.author, required this.initials, required this.text, required this.time, required this.incoming, required this.color, this.reactions = const [], this.audioFileId, this.audioTitle, this.audioPerformer});
   final String author;
   final String initials;
   final String text;
@@ -639,4 +771,7 @@ class MdMessage {
   final bool incoming;
   final Color color;
   final List<String> reactions;
+  final int? audioFileId;
+  final String? audioTitle;
+  final String? audioPerformer;
 }
