@@ -206,6 +206,33 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> registerUser(String firstName, String lastName) async {
+    try {
+      await gateway.registerUser(firstName: firstName.trim(), lastName: lastName.trim());
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    }
+    notifyListeners();
+  }
+
+  Future<void> authenticateEmailAddress(String email) async {
+    try {
+      await gateway.sendEmailAddress(email.trim());
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    }
+    notifyListeners();
+  }
+
+  Future<void> authenticateEmailCode(String code) async {
+    try {
+      await gateway.sendEmailCode(code.trim());
+    } catch (exception) {
+      authMessage = exception.toString().replaceFirst('Bad state: ', '');
+    }
+    notifyListeners();
+  }
+
   Future<void> loadRemoteChats() async {
     if (!gateway.isAvailable) return;
     try {
@@ -379,7 +406,7 @@ class _LoginPageState extends State<LoginPage> {
           const SizedBox(height: 12),
           TextField(controller: lastName, decoration: const InputDecoration(labelText: 'Last name (optional)')),
           const SizedBox(height: 16),
-          FilledButton(onPressed: () async { try { await controller.gateway.registerUser(firstName: firstName.text.trim(), lastName: lastName.text.trim()); } catch (exception) { controller.authMessage = exception.toString(); controller.notifyListeners(); } }, child: const Text('Create account')),
+          FilledButton(onPressed: () => controller.registerUser(firstName.text, lastName.text), child: const Text('Create account')),
         ]);
       case TdAuthState.waitingEmailAddress:
         return _emailStep(controller, false);
@@ -403,7 +430,7 @@ class _LoginPageState extends State<LoginPage> {
     const SizedBox(height: 16),
     TextField(controller: codeStep ? code : phone, keyboardType: codeStep ? TextInputType.number : TextInputType.emailAddress, decoration: InputDecoration(labelText: codeStep ? 'Email code' : 'Email address', prefixIcon: Icon(codeStep ? Icons.password_rounded : Icons.email_rounded))),
     const SizedBox(height: 16),
-    FilledButton(onPressed: () async { try { if (codeStep) { await controller.gateway.sendEmailCode(code.text.trim()); } else { await controller.gateway.sendEmailAddress(phone.text.trim()); } } catch (exception) { controller.authMessage = exception.toString(); controller.notifyListeners(); } }, child: Text(codeStep ? 'Verify email code' : 'Send email code')),
+    FilledButton(onPressed: () => codeStep ? controller.authenticateEmailCode(code.text) : controller.authenticateEmailAddress(phone.text), child: Text(codeStep ? 'Verify email code' : 'Send email code')),
   ]);
 
   Widget _sectionTitle(BuildContext context, String title) => Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800));
