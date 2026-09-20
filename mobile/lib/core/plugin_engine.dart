@@ -17,15 +17,17 @@ extension MdlessPluginPermissionLabel on MdlessPluginPermission {
 
 enum MdlessPluginSurface { chat, message, composer, settings }
 
-enum MdlessPluginEventType { appStarted, chatOpened, messageReceived, messageSent, composerOpened }
+enum MdlessPluginEventType { appStarted, chatOpened, messageReceived, messageSent, composerOpened, pluginActionInvoked }
 
 class MdlessPluginAction {
-  const MdlessPluginAction({required this.id, required this.label, required this.icon, required this.surface});
+  const MdlessPluginAction({required this.id, required this.label, required this.icon, required this.surface, this.command = 'showStatus'});
 
   final String id;
   final String label;
   final IconData icon;
   final MdlessPluginSurface surface;
+  /// An allowlisted native MDless operation. Manifests never execute code.
+  final String command;
 }
 
 class MdlessPluginEvent {
@@ -78,7 +80,7 @@ class PluginEngine extends ChangeNotifier {
       icon: '◒',
       accent: const Color(0xFF6750A4),
       permissions: {MdlessPluginPermission.messages},
-      actions: [MdlessPluginAction(id: 'focus-chat', label: 'Focus this chat', icon: Icons.center_focus_strong_rounded, surface: MdlessPluginSurface.chat)],
+      actions: [MdlessPluginAction(id: 'focus-chat', label: 'Focus this chat', icon: Icons.center_focus_strong_rounded, surface: MdlessPluginSurface.chat, command: 'focusChat')],
     ),
     MdlessPlugin(
       id: 'quick-translate',
@@ -87,7 +89,7 @@ class PluginEngine extends ChangeNotifier {
       icon: '文',
       accent: const Color(0xFF246A9C),
       permissions: {MdlessPluginPermission.messages, MdlessPluginPermission.network},
-      actions: [MdlessPluginAction(id: 'translate-message', label: 'Translate message', icon: Icons.translate_rounded, surface: MdlessPluginSurface.message)],
+      actions: [MdlessPluginAction(id: 'translate-message', label: 'Translate message', icon: Icons.translate_rounded, surface: MdlessPluginSurface.message, command: 'translateMessage')],
     ),
     MdlessPlugin(
       id: 'link-inspector',
@@ -96,7 +98,7 @@ class PluginEngine extends ChangeNotifier {
       icon: '↗',
       accent: const Color(0xFF006B5F),
       permissions: {MdlessPluginPermission.messages, MdlessPluginPermission.network},
-      actions: [MdlessPluginAction(id: 'inspect-link', label: 'Inspect link', icon: Icons.link_rounded, surface: MdlessPluginSurface.message)],
+      actions: [MdlessPluginAction(id: 'inspect-link', label: 'Inspect link', icon: Icons.link_rounded, surface: MdlessPluginSurface.message, command: 'inspectLink')],
     ),
     MdlessPlugin(
       id: 'emoji-reactions',
@@ -105,7 +107,7 @@ class PluginEngine extends ChangeNotifier {
       icon: '☺',
       accent: const Color(0xFF8D5A00),
       permissions: {MdlessPluginPermission.messages},
-      actions: [MdlessPluginAction(id: 'add-reaction', label: 'Add reaction', icon: Icons.emoji_emotions_rounded, surface: MdlessPluginSurface.message)],
+      actions: [MdlessPluginAction(id: 'add-reaction', label: 'Add reaction', icon: Icons.emoji_emotions_rounded, surface: MdlessPluginSurface.message, command: 'addReaction')],
     ),
   ];
 
@@ -170,6 +172,7 @@ class PluginEngine extends ChangeNotifier {
               'label': action.label,
               'icon': _iconName(action.icon),
               'surface': action.surface.name,
+              'command': action.command,
             }).toList(),
       };
 
@@ -210,7 +213,15 @@ class PluginEngine extends ChangeNotifier {
         final label = raw['label']?.toString().trim() ?? '';
         final surfaceName = raw['surface']?.toString() ?? MdlessPluginSurface.chat.name;
         final surface = MdlessPluginSurface.values.firstWhere((value) => value.name == surfaceName, orElse: () => MdlessPluginSurface.chat);
-        if (id.isNotEmpty && label.isNotEmpty) actions.add(MdlessPluginAction(id: id, label: label, icon: _iconForName(raw['icon']?.toString()), surface: surface));
+        if (id.isNotEmpty && label.isNotEmpty) {
+          actions.add(MdlessPluginAction(
+            id: id,
+            label: label,
+            icon: _iconForName(raw['icon']?.toString()),
+            surface: surface,
+            command: _commandFor(raw['command']?.toString()),
+          ));
+        }
       }
     }
     return MdlessPlugin(
@@ -225,6 +236,21 @@ class PluginEngine extends ChangeNotifier {
       actions: actions,
       builtIn: builtIn,
     );
+  }
+
+  String _commandFor(String? command) {
+    const allowed = {
+      'focusChat',
+      'clearFocus',
+      'translateMessage',
+      'inspectLink',
+      'addReaction',
+      'downloadMedia',
+      'markRead',
+      'muteChat',
+      'copyMessage',
+    };
+    return allowed.contains(command) ? command! : 'showStatus';
   }
 
   Color _parseAccent(Object? raw) {

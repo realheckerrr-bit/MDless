@@ -128,6 +128,7 @@ class AppController extends ChangeNotifier {
   String authMessage = 'Sign in with your Telegram account to continue.';
   String emojiStyle = 'Telegram iOS';
   String iconPack = 'Material You';
+  int? focusedChatId;
   int? activeCallId;
   String? activeCallState;
   Map<String, dynamic>? currentUser;
@@ -155,7 +156,11 @@ class AppController extends ChangeNotifier {
   TdAuthState get authState => gateway.authState;
   bool get signedIn => gateway.isAuthenticated;
 
-  List<ChatPreview> get filteredChats => chats.where((chat) => chat.name.toLowerCase().contains(search.toLowerCase()) || chat.preview.toLowerCase().contains(search.toLowerCase())).toList();
+  List<ChatPreview> get filteredChats => chats.where((chat) {
+    final matchesFocus = focusedChatId == null || chat.id == focusedChatId;
+    final query = search.toLowerCase();
+    return matchesFocus && (query.isEmpty || chat.name.toLowerCase().contains(query) || chat.preview.toLowerCase().contains(query));
+  }).toList();
   ChatPreview get activeChat => chats.firstWhere((chat) => chat.id == activeChatId);
   List<MdMessage> get activeMessages => searchedMessages[activeChatId] ?? messages[activeChatId] ?? const [];
 
@@ -175,6 +180,11 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
   void setSearch(String value) { search = value; notifyListeners(); }
+
+  void clearFocus() {
+    focusedChatId = null;
+    notifyListeners();
+  }
 
   Future<void> searchMessages(String query) async {
     final chatId = activeChatId;
@@ -485,9 +495,75 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> runPluginAction(MdlessPluginAction action, {int? chatId}) async {
-    await plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.chatOpened, chatId: chatId, payload: {'action': action.id}));
-    authMessage = 'Plugin action: ${action.label}';
+  Future<void> runPluginAction(MdlessPluginAction action, {int? chatId, MdMessage? message}) async {
+    await plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.pluginActionInvoked, chatId: chatId, messageId: message?.telegramId, payload: {'action': action.id, 'command': action.command}));
+    try {
+      switch (action.command) {
+        case 'focusChat':
+          if (chatId != null) {
+            focusedChatId = chatId;
+            selectChat(chatId);
+            authMessage = 'Focus mode is showing ${activeChat.name}.';
+          }
+        case 'clearFocus':
+          clearFocus();
+          authMessage = 'Focus mode cleared.';
+        case 'translateMessage':
+          if (message != null) {
+            await translateMessage(message);
+          } else {
+            authMessage = 'Select a message to translate.';
+          }
+        case 'addReaction':
+          if (message != null) {
+            await reactToMessage(message, '👍');
+          } else {
+            authMessage = 'Select a message to react to.';
+          }
+        case 'downloadMedia':
+          if (message != null) {
+            await downloadMedia(message);
+          } else {
+            authMessage = 'Select a media message to download.';
+          }
+        case 'markRead':
+          if (chatId != null && gateway.isAuthenticated) {
+            await gateway.markMessagesRead(chatId, messages[chatId]?.map((item) => item.telegramId).whereType<int>().toList() ?? const []);
+            authMessage = 'Chat marked as read.';
+          }
+        case 'muteChat':
+          if (chatId != null && gateway.isAuthenticated) {
+            await gateway.setChatMuted(chatId, true);
+            authMessage = 'Chat muted.';
+          }
+        case 'copyMessage':
+          if (message != null) {
+            await Clipboard.setData(ClipboardData(text: message.text));
+            authMessage = 'Message copied.';
+          }
+        case 'inspectLink':
+          final match = message == null ? null : RegExp(r'https?://[^\s]+').firstMatch(message.text);
+          authMessage = match == null ? 'No link found in this message.' : 'Link found: ${match.group(0)}';
+        default:
+          authMessage = 'Plugin action: ${action.label}';
+      }
+    } catch (exception) {
+      authMessage = 'Plugin action failed: $exception';
+    }
+    notifyListeners();
+  }
+
+  Future<void> translateMessage(MdMessage message) async {
+    final chatId = activeChatId;
+    final messageId = message.telegramId;
+    if (chatId == null || messageId == null || !gateway.isAuthenticated) return;
+    final localeLanguage = Platform.localeName.split(RegExp(r'[_-]')).first.toLowerCase();
+    final language = RegExp(r'^[a-z]{2}$').hasMatch(localeLanguage) ? localeLanguage : 'en';
+    final translated = await gateway.translateMessageText(chatId, messageId, languageCode: language);
+    final list = messages[chatId];
+    final index = list?.indexWhere((item) => item.telegramId == messageId) ?? -1;
+    if (list != null && index >= 0) list[index] = list[index].copyWith(translation: translated);
+    authMessage = 'Translated to ${language.isEmpty ? 'English' : language}.';
     notifyListeners();
   }
 
@@ -1019,6 +1095,7 @@ class ChatsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SafeArea(child: Column(children: [
     Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 12), child: TextField(onChanged: controller.setSearch, decoration: const InputDecoration(prefixIcon: Icon(Icons.search_rounded), hintText: 'Search conversations', suffixIcon: Icon(Icons.tune_rounded)))),
+    if (controller.focusedChatId != null) Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: Card(child: ListTile(leading: const Icon(Icons.center_focus_strong_rounded), title: const Text('Focus mode'), subtitle: Text('${controller.filteredChats.length} chat in focus'), trailing: TextButton(onPressed: controller.clearFocus, child: const Text('Clear'))))),
     Expanded(child: ListView.separated(padding: const EdgeInsets.fromLTRB(12, 0, 12, 20), itemCount: controller.filteredChats.length, separatorBuilder: (_, __) => const SizedBox(height: 4), itemBuilder: (context, index) { final chat = controller.filteredChats[index]; return ChatTile(chat: chat, onTap: () { controller.selectChat(chat.id); controller.loadActiveMessages(); }); })),
   ]));
 }
@@ -1253,6 +1330,7 @@ class _ChatPageState extends State<ChatPage> {
           if (!message.incoming && message.telegramId != null) ListTile(leading: const Icon(Icons.edit_rounded), title: const Text('Edit'), onTap: () { Navigator.pop(sheetContext); _editMessage(message); }),
           if (message.telegramId != null) ListTile(leading: const Icon(Icons.forward_rounded), title: const Text('Forward'), onTap: () { Navigator.pop(sheetContext); _forwardMessage(message); }),
           if (!message.incoming && message.telegramId != null) ListTile(leading: Icon(Icons.delete_outline_rounded, color: Theme.of(context).colorScheme.error), title: Text('Delete', style: TextStyle(color: Theme.of(context).colorScheme.error)), onTap: () { Navigator.pop(sheetContext); _deleteMessage(message); }),
+          ...controller.plugins.actionsFor(MdlessPluginSurface.message).map((action) => ListTile(leading: Icon(action.icon), title: Text(action.label), onTap: () { Navigator.pop(sheetContext); controller.runPluginAction(action, chatId: widget.chat.id, message: message); })),
           const SizedBox(height: 8),
         ]),
       ),
@@ -1346,7 +1424,7 @@ class MessageBubble extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final color = message.incoming ? scheme.surfaceContainerHigh : scheme.primaryContainer;
     final content = message.mediaFileId == null
-        ? Text(message.text)
+        ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(message.text), if (message.translation != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(message.translation!, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic)))])
         : InkWell(
             onTap: () => onMediaTap(message),
             borderRadius: BorderRadius.circular(14),
@@ -1542,7 +1620,7 @@ class ChatPreview {
 }
 
 class MdMessage {
-  MdMessage({required this.author, required this.initials, required this.text, required this.time, required this.incoming, required this.color, this.reactions = const [], this.telegramId, this.audioFileId, this.audioTitle, this.audioPerformer, this.mediaFileId, this.mediaKind, this.mediaName});
+  MdMessage({required this.author, required this.initials, required this.text, required this.time, required this.incoming, required this.color, this.reactions = const [], this.translation, this.telegramId, this.audioFileId, this.audioTitle, this.audioPerformer, this.mediaFileId, this.mediaKind, this.mediaName});
   final String author;
   final String initials;
   final String text;
@@ -1550,6 +1628,7 @@ class MdMessage {
   final bool incoming;
   final Color color;
   final List<String> reactions;
+  final String? translation;
   final int? telegramId;
   final int? audioFileId;
   final String? audioTitle;
@@ -1558,7 +1637,7 @@ class MdMessage {
   final String? mediaKind;
   final String? mediaName;
 
-  MdMessage copyWith({String? text, List<String>? reactions}) => MdMessage(
+  MdMessage copyWith({String? text, List<String>? reactions, String? translation}) => MdMessage(
         author: author,
         initials: initials,
         text: text ?? this.text,
@@ -1566,6 +1645,7 @@ class MdMessage {
         incoming: incoming,
         color: color,
         reactions: reactions ?? this.reactions,
+        translation: translation ?? this.translation,
         telegramId: telegramId,
         audioFileId: audioFileId,
         audioTitle: audioTitle,

@@ -32,9 +32,11 @@ Settings can install a JSON manifest from the device. Manifests declare metadata
   "accent": "#FF6750A4",
   "permissions": ["messages"],
   "actions": [
-    {"id": "read-chat", "label": "Open reading mode", "icon": "search", "surface": "chat"}
+    {"id": "read-chat", "label": "Focus this chat", "icon": "focus", "surface": "chat", "command": "focusChat"}
   ]
 }
 ```
+
+Manifest commands are allowlisted native operations: `focusChat`, `clearFocus`, `translateMessage`, `inspectLink`, `addReaction`, `downloadMedia`, `markRead`, `muteChat`, and `copyMessage`. Unknown commands are shown as status-only actions; downloaded code is never executed.
 
 TDLib is Telegram's official cross-platform client library and handles encryption, local storage, asynchronous requests, and ordered updates. The Flutter binding currently needs native TDLib packaging for iOS, so Android is the first native target in this repository; iOS packaging is the next platform task.

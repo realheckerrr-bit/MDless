@@ -305,6 +305,18 @@ class TdlibGateway {
         'update_recent_reactions': true,
       });
 
+  Future<String> translateMessageText(int chatId, int messageId, {String languageCode = 'en'}) async {
+    final response = await request({
+      '@type': 'translateMessageText',
+      'chat_id': chatId,
+      'message_id': messageId,
+      'to_language_code': languageCode,
+    });
+    final text = response['text'];
+    if (text is Map && text['text'] is String) return text['text'] as String;
+    throw StateError('Telegram returned no translated text.');
+  }
+
   Future<void> sendLocalFile(int chatId, String path, {String? caption}) async {
     final lowerPath = path.toLowerCase();
     final isImage = lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg') || lowerPath.endsWith('.png') || lowerPath.endsWith('.webp');
