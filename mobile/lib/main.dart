@@ -307,7 +307,7 @@ class AppController extends ChangeNotifier {
   Future<void> pickAndSendAttachment() async {
     final chatId = activeChatId;
     if (chatId == null || !gateway.isAuthenticated) return;
-    final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: false);
+    final result = await FilePicker.pickFiles(type: FileType.any, allowMultiple: false);
     if (result == null || result.files.isEmpty) return;
     final path = result.files.single.path;
     if (path == null || path.isEmpty) return;
