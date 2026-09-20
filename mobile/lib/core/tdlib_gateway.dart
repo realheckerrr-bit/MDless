@@ -133,6 +133,17 @@ class TdlibGateway {
     await request({'@type': 'sendMessage', 'chat_id': chatId, 'input_message_content': {'@type': 'inputMessageText', 'text': {'@type': 'formattedText', 'text': text, 'entities': []}}});
   }
 
+  Future<void> sendLocalFile(int chatId, String path, {String? caption}) async {
+    final lowerPath = path.toLowerCase();
+    final isImage = lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg') || lowerPath.endsWith('.png') || lowerPath.endsWith('.webp');
+    final inputFile = {'@type': 'inputFileLocal', 'path': path};
+    final formattedCaption = {'@type': 'formattedText', 'text': caption ?? '', 'entities': []};
+    final content = isImage
+        ? {'@type': 'inputMessagePhoto', 'photo': inputFile, 'added_sticker_file_ids': <int>[], 'width': 0, 'height': 0, 'caption': formattedCaption, 'self_destruct_time': 0, 'has_spoiler': false}
+        : {'@type': 'inputMessageDocument', 'document': inputFile, 'thumbnail': null, 'disable_content_type_detection': false, 'caption': formattedCaption};
+    await request({'@type': 'sendMessage', 'chat_id': chatId, 'input_message_content': content});
+  }
+
   Future<String?> downloadFile(int fileId) async {
     await request({'@type': 'downloadFile', 'file_id': fileId, 'priority': 32, 'offset': 0, 'limit': 0, 'synchronous': true});
     for (var attempt = 0; attempt < 60; attempt++) {

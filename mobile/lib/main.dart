@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -301,6 +302,27 @@ class AppController extends ChangeNotifier {
     if (gateway.authState == TdAuthState.ready) await gateway.sendMessage(activeChatId!, value);
     messages.putIfAbsent(activeChatId!, () => []).add(MdMessage(author: 'You', initials: 'YO', text: value, time: 'now', incoming: false, color: const Color(0xFFD6C7FF)));
     notifyListeners();
+  }
+
+  Future<void> pickAndSendAttachment() async {
+    final chatId = activeChatId;
+    if (chatId == null || !gateway.isAuthenticated) return;
+    final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: false);
+    if (result == null || result.files.isEmpty) return;
+    final path = result.files.single.path;
+    if (path == null || path.isEmpty) return;
+    final name = result.files.single.name;
+    try {
+      authMessage = 'Uploading $name…';
+      notifyListeners();
+      await gateway.sendLocalFile(chatId, path);
+      messages.putIfAbsent(chatId, () => []).add(MdMessage(author: 'You', initials: 'YO', text: name, time: 'now', incoming: false, color: const Color(0xFFD6C7FF), mediaName: name, mediaKind: 'document'));
+      authMessage = 'Sent $name.';
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Upload error: $exception';
+      notifyListeners();
+    }
   }
 
   Future<void> loadActiveMessages() async {
@@ -888,7 +910,7 @@ class Composer extends StatelessWidget {
   final TextEditingController controllerText;
   final VoidCallback onSent;
   @override
-  Widget build(BuildContext context) => SafeArea(top: false, child: Padding(padding: const EdgeInsets.fromLTRB(10, 7, 10, 10), child: Row(children: [IconButton(onPressed: () {}, icon: const Icon(Icons.add_circle_outline_rounded)), Expanded(child: TextField(controller: controllerText, minLines: 1, maxLines: 5, textInputAction: TextInputAction.newline, decoration: const InputDecoration(hintText: 'Write a message…', contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12))),), const SizedBox(width: 5), IconButton.filled(onPressed: () { controller.send(controllerText.text); onSent(); }, icon: const Icon(Icons.arrow_upward_rounded))])));
+  Widget build(BuildContext context) => SafeArea(top: false, child: Padding(padding: const EdgeInsets.fromLTRB(10, 7, 10, 10), child: Row(children: [IconButton(onPressed: controller.pickAndSendAttachment, icon: const Icon(Icons.add_circle_outline_rounded)), Expanded(child: TextField(controller: controllerText, minLines: 1, maxLines: 5, textInputAction: TextInputAction.newline, decoration: const InputDecoration(hintText: 'Write a message…', contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12))),), const SizedBox(width: 5), IconButton.filled(onPressed: () { controller.send(controllerText.text); onSent(); }, icon: const Icon(Icons.arrow_upward_rounded))])));
 }
 
 class MessageBubble extends StatelessWidget {
