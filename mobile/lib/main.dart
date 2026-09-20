@@ -154,7 +154,12 @@ class AppController extends ChangeNotifier {
   ChatPreview get activeChat => chats.firstWhere((chat) => chat.id == activeChatId);
   List<MdMessage> get activeMessages => searchedMessages[activeChatId] ?? messages[activeChatId] ?? const [];
 
-  void selectChat(int id) { activeChatId = id; searchedMessages.remove(id); notifyListeners(); }
+  void selectChat(int id) {
+    activeChatId = id;
+    searchedMessages.remove(id);
+    unawaited(plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.chatOpened, chatId: id)));
+    notifyListeners();
+  }
   void clearChat() { activeChatId = null; notifyListeners(); }
   void setSearch(String value) { search = value; notifyListeners(); }
 
@@ -334,6 +339,13 @@ class AppController extends ChangeNotifier {
     final value = text.trim();
     if (gateway.authState == TdAuthState.ready) await gateway.sendMessage(activeChatId!, value);
     messages.putIfAbsent(activeChatId!, () => []).add(MdMessage(author: 'You', initials: 'YO', text: value, time: 'now', incoming: false, color: const Color(0xFFD6C7FF)));
+    unawaited(plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.messageSent, chatId: activeChatId, payload: {'text': value})));
+    notifyListeners();
+  }
+
+  Future<void> runPluginAction(MdlessPluginAction action, {int? chatId}) async {
+    await plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.chatOpened, chatId: chatId, payload: {'action': action.id}));
+    authMessage = 'Plugin action: ${action.label}';
     notifyListeners();
   }
 
@@ -564,6 +576,9 @@ class AppController extends ChangeNotifier {
               time: _messageTime(typedMessage['date']),
               unread: conversation.unread + (incoming ? 1 : 0),
             );
+          }
+          if (incoming) {
+            unawaited(plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.messageReceived, chatId: chatId, messageId: typedMessage['id'] as int?, payload: {'type': _messagePreview(typedMessage)})));
           }
         }
       }
@@ -926,7 +941,7 @@ class _ChatPageState extends State<ChatPage> {
           if (widget.chat.userId != null) IconButton(onPressed: () => controller.startVoiceCall(widget.chat), icon: const Icon(Icons.call_outlined)),
           IconButton(onPressed: () => _searchMessages(context), icon: const Icon(Icons.manage_search_rounded)),
           IconButton(onPressed: () => showChatCustomization(context, controller, widget.chat), icon: const Icon(Icons.palette_outlined)),
-          IconButton(onPressed: () {}, icon: const Icon(Icons.more_vert_rounded)),
+          IconButton(onPressed: () => showPluginActions(context, controller, widget.chat), icon: const Icon(Icons.more_vert_rounded)),
         ],
       ),
       body: Column(children: [
@@ -1126,9 +1141,15 @@ class _SettingsPageState extends State<SettingsPage> {
       const SizedBox(height: 16),
       Text('Plugins', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
       const SizedBox(height: 8),
-      ...controller.plugins.plugins.map((plugin) => Card(child: SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text(plugin.description)))),
+      ...controller.plugins.plugins.map((plugin) => Card(child: Padding(padding: const EdgeInsets.only(bottom: 10), child: Column(children: [
+        SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text('${plugin.description}\n${plugin.author} · v${plugin.version}')),
+        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 4), child: Align(alignment: Alignment.centerLeft, child: Wrap(spacing: 6, runSpacing: 4, children: [
+          ...plugin.permissions.map((permission) => Chip(avatar: const Icon(Icons.lock_outline_rounded, size: 14), label: Text(permission.label), visualDensity: VisualDensity.compact)),
+          Chip(avatar: const Icon(Icons.bolt_rounded, size: 14), label: Text('${plugin.actions.length} actions'), visualDensity: VisualDensity.compact),
+        ]))),
+      ])))),
       const SizedBox(height: 16),
-      Card(child: ListTile(leading: const Icon(Icons.extension_rounded), title: const Text('Native plugin SDK'), subtitle: const Text('Plugins are compiled Flutter packages registered with PluginEngine. This keeps mobile permissions explicit and safe.'))),
+      Card(child: ListTile(leading: const Icon(Icons.extension_rounded), title: const Text('Native plugin SDK'), subtitle: const Text('Plugins declare permissions, actions, and update events. Compiled packages are registered with PluginEngine; untrusted downloaded code is never executed.'))),
       const SizedBox(height: 12),
       OutlinedButton.icon(onPressed: controller.logOut, icon: const Icon(Icons.logout_rounded), label: const Text('Log out of Telegram')),
     ]);
@@ -1136,6 +1157,23 @@ class _SettingsPageState extends State<SettingsPage> {
 }
 
 Future<void> showChatCustomization(BuildContext context, AppController controller, ChatPreview chat) async { final current = controller.customizations[chat.id] ?? const ChatCustomization(); var value = current; await showModalBottomSheet<void>(context: context, showDragHandle: true, builder: (context) => StatefulBuilder(builder: (context, setState) => Padding(padding: const EdgeInsets.fromLTRB(20, 4, 20, 30), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Customize ${chat.name}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)), const SizedBox(height: 18), const Text('Accent color'), const SizedBox(height: 8), Wrap(spacing: 10, children: [Color(0xFF6750A4), Color(0xFF006B5F), Color(0xFF246A9C), Color(0xFF8D5A00), Color(0xFFBA1A1A)].map((color) => InkWell(onTap: () => setState(() => value = value.copyWith(accent: color)), borderRadius: BorderRadius.circular(99), child: CircleAvatar(radius: 18, backgroundColor: color, child: value.accent == color ? const Icon(Icons.check, color: Colors.white, size: 18) : null))).toList()), SwitchListTile(contentPadding: EdgeInsets.zero, value: value.compact, onChanged: (v) => setState(() => value = value.copyWith(compact: v)), title: const Text('Compact messages')), SwitchListTile(contentPadding: EdgeInsets.zero, value: value.dottedWallpaper, onChanged: (v) => setState(() => value = value.copyWith(dottedWallpaper: v)), title: const Text('Soft dot wallpaper')), FilledButton(onPressed: () { controller.customize(chat.id, value); Navigator.pop(context); }, child: const Text('Save chat style'))])))); }
+
+Future<void> showPluginActions(BuildContext context, AppController controller, ChatPreview chat) async {
+  final actions = controller.plugins.actionsFor(MdlessPluginSurface.chat);
+  if (actions.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enable a chat plugin in Settings first.')));
+    return;
+  }
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (context) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const ListTile(title: Text('Plugin actions', style: TextStyle(fontWeight: FontWeight.w800)), subtitle: Text('Actions provided by enabled MDless plugins')),
+      ...actions.map((action) => ListTile(leading: Icon(action.icon), title: Text(action.label), onTap: () { Navigator.pop(context); controller.runPluginAction(action, chatId: chat.id); })),
+      const SizedBox(height: 12),
+    ])),
+  );
+}
 
 class Avatar extends StatelessWidget {
   const Avatar({required this.chat, super.key});
