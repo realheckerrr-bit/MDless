@@ -107,6 +107,19 @@ class TdlibGateway {
 
   Future<Map<String, dynamic>> loadCurrentUser() => request({'@type': 'getMe'});
 
+  Future<List<Map<String, dynamic>>> searchContacts(String query) async {
+    final response = await request({'@type': 'searchContacts', 'query': query, 'limit': 20});
+    final users = <Map<String, dynamic>>[];
+    for (final id in List<int>.from(response['user_ids'] ?? const [])) {
+      users.add(await request({'@type': 'getUser', 'user_id': id}));
+    }
+    return users;
+  }
+
+  Future<Map<String, dynamic>> searchPublicChat(String username) => request({'@type': 'searchPublicChat', 'username': username.replaceFirst('@', '').trim()});
+
+  Future<Map<String, dynamic>> createPrivateChat(int userId) => request({'@type': 'createPrivateChat', 'user_id': userId, 'force': true});
+
   Future<void> logOut() async {
     await request({'@type': 'logOut'});
     authState = TdAuthState.waitingPhone;

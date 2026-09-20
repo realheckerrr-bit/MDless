@@ -303,14 +303,62 @@ class AppController extends ChangeNotifier {
       if (remote.isEmpty) return;
       chats
         ..clear()
-        ..addAll(remote.map((chat) {
-          final title = (chat['title'] ?? 'Telegram chat').toString();
-          final type = chat['type'];
-          final userId = type is Map && type['@type'] == 'chatTypePrivate' ? type['user_id'] as int? : null;
-          return ChatPreview(id: chat['id'] as int, name: title, initials: _initials(title), preview: 'Telegram conversation', time: '', unread: chat['unread_count'] as int? ?? 0, color: const Color(0xFFD6C7FF), userId: userId);
-        }));
+        ..addAll(remote.map(_chatPreviewFromRemote));
       notifyListeners();
     } catch (exception) { authMessage = exception.toString(); notifyListeners(); }
+  }
+
+  ChatPreview _chatPreviewFromRemote(Map<String, dynamic> chat) {
+    final title = (chat['title'] ?? 'Telegram chat').toString();
+    final type = chat['type'];
+    final typeName = type is Map ? type['@type']?.toString() : null;
+    final userId = typeName == 'chatTypePrivate' && type is Map ? type['user_id'] as int? : null;
+    return ChatPreview(
+      id: chat['id'] as int,
+      name: title,
+      initials: _initials(title),
+      preview: 'Telegram conversation',
+      time: '',
+      unread: chat['unread_count'] as int? ?? 0,
+      color: const Color(0xFFD6C7FF),
+      members: switch (typeName) {
+        'chatTypeBasicGroup' => 'Group',
+        'chatTypeSupergroup' => 'Group or channel',
+        _ => null,
+      },
+      userId: userId,
+    );
+  }
+
+  Future<bool> startNewChat(String query) async {
+    final value = query.trim();
+    if (value.isEmpty || !gateway.isAuthenticated) return false;
+    try {
+      Map<String, dynamic> remoteChat;
+      if (value.startsWith('@')) {
+        remoteChat = await gateway.searchPublicChat(value);
+      } else {
+        final users = await gateway.searchContacts(value);
+        if (users.isEmpty) {
+          authMessage = 'No Telegram contact or username was found.';
+          notifyListeners();
+          return false;
+        }
+        final userId = users.first['id'] as int?;
+        if (userId == null) return false;
+        remoteChat = await gateway.createPrivateChat(userId);
+      }
+      final chat = _chatPreviewFromRemote(remoteChat);
+      chats.removeWhere((item) => item.id == chat.id);
+      chats.insert(0, chat);
+      selectChat(chat.id);
+      await loadActiveMessages();
+      return true;
+    } catch (exception) {
+      authMessage = 'Could not open chat: $exception';
+      notifyListeners();
+      return false;
+    }
   }
 
   Future<void> loadCurrentUser() async {
@@ -814,7 +862,7 @@ class _MdlessHomeState extends State<MdlessHome> {
       builder: (context, _) {
         if (controller.activeChatId != null) return ChatPage(controller: controller, chat: controller.activeChat, onBack: controller.clearChat);
         return Scaffold(
-          appBar: AppBar(title: Text(tab == 0 ? 'Messages' : tab == 1 ? 'Saved' : 'Settings', style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.5)), actions: [IconButton(onPressed: controller.toggleTheme, icon: Icon(controller.darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded))]),
+          appBar: AppBar(title: Text(tab == 0 ? 'Messages' : tab == 1 ? 'Saved' : 'Settings', style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.5)), actions: [if (tab == 0) IconButton(onPressed: () => showNewChatDialog(context, controller), icon: const Icon(Icons.edit_square_rounded), tooltip: 'New chat'), IconButton(onPressed: controller.toggleTheme, icon: Icon(controller.darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded))]),
           body: Column(children: [if (controller.activeCallId != null) CallBanner(controller: controller), Expanded(child: IndexedStack(index: tab, children: [ChatsPage(controller: controller), SavedPage(controller: controller), SettingsPage(controller: controller)]))]),
           bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [if (controller.music.hasTrack) MusicMiniPlayer(player: controller.music), NavigationBar(selectedIndex: tab, onDestinationSelected: (value) => setState(() => tab = value), destinations: const [NavigationDestination(icon: Icon(Icons.forum_outlined), selectedIcon: Icon(Icons.forum_rounded), label: 'Chats'), NavigationDestination(icon: Icon(Icons.star_border_rounded), selectedIcon: Icon(Icons.star_rounded), label: 'Saved'), NavigationDestination(icon: Icon(Icons.tune_rounded), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings')])]),
         );
@@ -927,6 +975,25 @@ class SavedPage extends StatelessWidget {
   final AppController controller;
   @override
   Widget build(BuildContext context) => Center(child: FilledButton.icon(onPressed: () { controller.selectChat(4); }, icon: const Icon(Icons.star_rounded), label: const Text('Open Saved Messages')));
+}
+
+Future<void> showNewChatDialog(BuildContext context, AppController controller) async {
+  final query = TextEditingController();
+  final value = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('New Telegram chat'),
+      content: TextField(controller: query, autofocus: true, textInputAction: TextInputAction.search, decoration: const InputDecoration(labelText: 'Username or contact', hintText: '@username')),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(dialogContext, query.text), child: const Text('Open chat')),
+      ],
+    ),
+  );
+  query.dispose();
+  if (value == null || !context.mounted) return;
+  final opened = await controller.startNewChat(value);
+  if (!opened && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(controller.authMessage)));
 }
 
 class ChatTile extends StatelessWidget {

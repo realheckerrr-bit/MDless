@@ -13,6 +13,8 @@ flutter run --dart-define=TELEGRAM_API_ID=123456 --dart-define=TELEGRAM_API_HASH
 
 You can also enter API credentials in Settings. Never commit real credentials or a TDLib database directory.
 
+For a release build that starts already configured for Telegram, add `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` as repository secrets. The Android workflow passes them only as masked build-time defines; the values are never committed to the repository. If the secrets are absent, use Advanced client setup on the login screen.
+
 The app contains the Material 3 Expressive shell, bundled Google Sans Flex typography, TDLib gateway, native Telegram login, settings-based plugin registry, per-chat appearance controls, Telegram audio playback, and private-call initiation with microphone permission. Flutter plugins are compiled into the app; arbitrary downloaded Dart code is intentionally not executed on-device. This keeps plugin permissions reviewable and compatible with Android app sandboxing.
 
 TDLib is Telegram's official cross-platform client library and handles encryption, local storage, asynchronous requests, and ordered updates. The Flutter binding currently needs native TDLib packaging for iOS, so Android is the first native target in this repository; iOS packaging is the next platform task.
