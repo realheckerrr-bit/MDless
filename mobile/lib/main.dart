@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -158,12 +159,20 @@ class AppController extends ChangeNotifier {
   List<MdMessage> get activeMessages => searchedMessages[activeChatId] ?? messages[activeChatId] ?? const [];
 
   void selectChat(int id) {
+    final previous = activeChatId;
+    if (previous != null && previous != id && gateway.isAuthenticated) unawaited(gateway.closeChat(previous));
     activeChatId = id;
+    if (gateway.isAuthenticated) unawaited(gateway.openChat(id));
     searchedMessages.remove(id);
     unawaited(plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.chatOpened, chatId: id)));
     notifyListeners();
   }
-  void clearChat() { activeChatId = null; notifyListeners(); }
+  void clearChat() {
+    final previous = activeChatId;
+    if (previous != null && gateway.isAuthenticated) unawaited(gateway.closeChat(previous));
+    activeChatId = null;
+    notifyListeners();
+  }
   void setSearch(String value) { search = value; notifyListeners(); }
 
   Future<void> searchMessages(String query) async {
@@ -313,12 +322,14 @@ class AppController extends ChangeNotifier {
     final type = chat['type'];
     final typeName = type is Map ? type['@type']?.toString() : null;
     final userId = typeName == 'chatTypePrivate' && type is Map ? type['user_id'] as int? : null;
+    final lastMessage = chat['last_message'];
+    final lastMessageMap = lastMessage is Map ? Map<String, dynamic>.from(lastMessage) : null;
     return ChatPreview(
       id: chat['id'] as int,
       name: title,
       initials: _initials(title),
-      preview: 'Telegram conversation',
-      time: '',
+      preview: lastMessageMap == null ? 'Telegram conversation' : _messagePreview(lastMessageMap),
+      time: lastMessageMap == null ? '' : _messageTime(lastMessageMap['date']),
       unread: chat['unread_count'] as int? ?? 0,
       color: const Color(0xFFD6C7FF),
       members: switch (typeName) {
@@ -390,13 +401,87 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> send(String text) async {
+  Future<void> send(String text, {int? replyToMessageId}) async {
     if (text.trim().isEmpty || activeChatId == null) return;
     final value = text.trim();
-    if (gateway.authState == TdAuthState.ready) await gateway.sendMessage(activeChatId!, value);
+    if (gateway.authState == TdAuthState.ready) {
+      await gateway.sendMessage(activeChatId!, value, replyToMessageId: replyToMessageId);
+    }
     messages.putIfAbsent(activeChatId!, () => []).add(MdMessage(author: 'You', initials: 'YO', text: value, time: 'now', incoming: false, color: const Color(0xFFD6C7FF)));
     unawaited(plugins.dispatch(MdlessPluginEvent(type: MdlessPluginEventType.messageSent, chatId: activeChatId, payload: {'text': value})));
     notifyListeners();
+  }
+
+  Future<void> reactToMessage(MdMessage message, String emoji) async {
+    final chatId = activeChatId;
+    final messageId = message.telegramId;
+    if (chatId == null || messageId == null || !gateway.isAuthenticated) return;
+    try {
+      await gateway.setMessageReaction(chatId, messageId, emoji);
+      final list = messages[chatId];
+      if (list != null) {
+        final index = list.indexWhere((item) => item.telegramId == messageId);
+        if (index >= 0) {
+          final reactions = [...list[index].reactions];
+          final existing = reactions.indexWhere((item) => item.startsWith('$emoji '));
+          if (existing >= 0) {
+            final count = int.tryParse(reactions[existing].split(' ').last) ?? 1;
+            reactions[existing] = '$emoji ${count + 1}';
+          } else {
+            reactions.add('$emoji 1');
+          }
+          list[index] = list[index].copyWith(reactions: reactions);
+        }
+      }
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Reaction error: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> editMessage(MdMessage message, String text) async {
+    final chatId = activeChatId;
+    final messageId = message.telegramId;
+    if (chatId == null || messageId == null || text.trim().isEmpty || !gateway.isAuthenticated) return;
+    try {
+      await gateway.editMessageText(chatId, messageId, text.trim());
+      final list = messages[chatId];
+      final index = list?.indexWhere((item) => item.telegramId == messageId) ?? -1;
+      if (list != null && index >= 0) list[index] = list[index].copyWith(text: text.trim());
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Edit error: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteMessage(MdMessage message) async {
+    final chatId = activeChatId;
+    final messageId = message.telegramId;
+    if (chatId == null || messageId == null || !gateway.isAuthenticated) return;
+    try {
+      await gateway.deleteMessages(chatId, [messageId]);
+      messages[chatId]?.removeWhere((item) => item.telegramId == messageId);
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Delete error: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> forwardMessage(MdMessage message, ChatPreview target) async {
+    final fromChatId = activeChatId;
+    final messageId = message.telegramId;
+    if (fromChatId == null || messageId == null || !gateway.isAuthenticated) return;
+    try {
+      await gateway.forwardMessages(target.id, fromChatId, [messageId]);
+      authMessage = 'Forwarded to ${target.name}.';
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Forward error: $exception';
+      notifyListeners();
+    }
   }
 
   Future<void> runPluginAction(MdlessPluginAction action, {int? chatId}) async {
@@ -487,6 +572,7 @@ class AppController extends ChangeNotifier {
         _ => null,
       };
       final authorIsMe = message['is_outgoing'] == true;
+      final interactionInfo = message['interaction_info'];
       return MdMessage(
         telegramId: message['id'] as int?,
         author: authorIsMe ? 'You' : conversation.name,
@@ -501,6 +587,7 @@ class AppController extends ChangeNotifier {
         mediaFileId: fileId,
         mediaKind: mediaKind,
         mediaName: type == 'messageDocument' && payload != null ? payload['file_name']?.toString() : null,
+        reactions: interactionInfo is Map ? _mapReactions(interactionInfo) : const [],
       );
     }).toList();
   }
@@ -585,6 +672,45 @@ class AppController extends ChangeNotifier {
   }
 
   void _handleUpdate(Map<String, dynamic> update) {
+    if (update['@type'] == 'updateNewChat') {
+      final chat = update['chat'];
+      if (chat is Map && chat['id'] is int) {
+        final preview = _chatPreviewFromRemote(Map<String, dynamic>.from(chat));
+        chats.removeWhere((item) => item.id == preview.id);
+        chats.insert(0, preview);
+        notifyListeners();
+      }
+    }
+    if (update['@type'] == 'updateChatLastMessage') {
+      final chatId = update['chat_id'] as int?;
+      final index = chatId == null ? -1 : chats.indexWhere((chat) => chat.id == chatId);
+      final lastMessage = update['last_message'];
+      if (index >= 0 && lastMessage is Map) {
+        final conversation = chats[index];
+        final message = Map<String, dynamic>.from(lastMessage);
+        chats[index] = conversation.copyWith(preview: _messagePreview(message), time: _messageTime(message['date']));
+        notifyListeners();
+      }
+    }
+    if (update['@type'] == 'updateChatUnreadCount') {
+      final chatId = update['chat_id'] as int?;
+      final index = chatId == null ? -1 : chats.indexWhere((chat) => chat.id == chatId);
+      if (index >= 0) {
+        chats[index] = chats[index].copyWith(unread: update['unread_count'] as int? ?? 0);
+        notifyListeners();
+      }
+    }
+    if (update['@type'] == 'updateMessageInteractionInfo') {
+      final chatId = update['chat_id'] as int?;
+      final messageId = update['message_id'] as int?;
+      final interactionInfo = update['interaction_info'];
+      final list = chatId == null ? null : messages[chatId];
+      if (list != null && messageId != null && interactionInfo is Map) {
+        final index = list.indexWhere((message) => message.telegramId == messageId);
+        if (index >= 0) list[index] = list[index].copyWith(reactions: _mapReactions(interactionInfo));
+        notifyListeners();
+      }
+    }
     if (update['@type'] == 'updateCall') {
       final call = update['call'];
       if (call is Map) {
@@ -658,6 +784,18 @@ class AppController extends ChangeNotifier {
       'messageAnimation' => 'Animation',
       _ => 'New Telegram message',
     };
+  }
+
+  List<String> _mapReactions(Map interactionInfo) {
+    final raw = interactionInfo['reactions'];
+    final entries = raw is Map ? raw['reactions'] : raw;
+    if (entries is! List) return const [];
+    return entries.whereType<Map>().map((entry) {
+      final type = entry['type'];
+      final emoji = type is Map ? type['emoji']?.toString() : null;
+      final count = entry['total_count'] ?? entry['count'] ?? 0;
+      return emoji == null ? '' : '$emoji $count';
+    }).where((value) => value.isNotEmpty).toList();
   }
 
   String _initials(String title) => title.split(RegExp(r'\s+')).take(2).map((part) => part.isEmpty ? '' : part[0]).join().toUpperCase();
@@ -1016,6 +1154,7 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage> {
   final composer = TextEditingController();
   final scroll = ScrollController();
+  MdMessage? replyingTo;
   @override
   void dispose() { composer.dispose(); scroll.dispose(); super.dispose(); }
   @override
@@ -1056,12 +1195,14 @@ class _ChatPageState extends State<ChatPage> {
                   message: controller.activeMessages[controller.activeMessages.length - 1 - index],
                   compact: prefs.compact,
                   onMediaTap: (message) => message.audioFileId != null ? controller.playAudio(message) : controller.downloadMedia(message),
+                  onLongPress: (message) => _showMessageActions(context, message),
                 ),
               ),
             ),
           ),
         ),
-        Composer(controller: controller, controllerText: composer, onSent: () {
+        Composer(controller: controller, controllerText: composer, replyingTo: replyingTo, onCancelReply: () => setState(() => replyingTo = null), onSent: () {
+          setState(() => replyingTo = null);
           composer.clear();
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (scroll.hasClients) scroll.animateTo(0, duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
@@ -1087,6 +1228,76 @@ class _ChatPageState extends State<ChatPage> {
     field.dispose();
     if (query != null) await widget.controller.searchMessages(query);
   }
+
+  Future<void> _showMessageActions(BuildContext context, MdMessage message) async {
+    final controller = widget.controller;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(children: [
+          ListTile(
+            leading: Avatar(chat: widget.chat),
+            title: Text(message.author, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(message.text, maxLines: 2, overflow: TextOverflow.ellipsis),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Wrap(spacing: 8, children: ['👍', '❤️', '😂', '😮', '😢', '👎'].map((emoji) => ActionChip(label: Text(emoji, style: const TextStyle(fontSize: 20)), onPressed: () { Navigator.pop(sheetContext); controller.reactToMessage(message, emoji); })).toList()),
+          ),
+          ListTile(leading: const Icon(Icons.reply_rounded), title: const Text('Reply'), onTap: () { Navigator.pop(sheetContext); if (mounted) setState(() => replyingTo = message); }),
+          ListTile(leading: const Icon(Icons.copy_rounded), title: const Text('Copy text'), onTap: () { Clipboard.setData(ClipboardData(text: message.text)); Navigator.pop(sheetContext); }),
+          if (!message.incoming && message.telegramId != null) ListTile(leading: const Icon(Icons.edit_rounded), title: const Text('Edit'), onTap: () { Navigator.pop(sheetContext); _editMessage(message); }),
+          if (message.telegramId != null) ListTile(leading: const Icon(Icons.forward_rounded), title: const Text('Forward'), onTap: () { Navigator.pop(sheetContext); _forwardMessage(message); }),
+          if (!message.incoming && message.telegramId != null) ListTile(leading: Icon(Icons.delete_outline_rounded, color: Theme.of(context).colorScheme.error), title: Text('Delete', style: TextStyle(color: Theme.of(context).colorScheme.error)), onTap: () { Navigator.pop(sheetContext); _deleteMessage(message); }),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _editMessage(MdMessage message) async {
+    final field = TextEditingController(text: message.text);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Edit message'),
+        content: TextField(controller: field, autofocus: true, minLines: 1, maxLines: 5),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, field.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    field.dispose();
+    if (value != null) await widget.controller.editMessage(message, value);
+  }
+
+  Future<void> _deleteMessage(MdMessage message) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete message?'),
+        content: const Text('This removes the message for everyone when Telegram allows it.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.controller.deleteMessage(message);
+  }
+
+  Future<void> _forwardMessage(MdMessage message) async {
+    final target = await showDialog<ChatPreview>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Forward to'),
+        children: widget.controller.chats.where((chat) => chat.id != widget.chat.id).take(12).map((chat) => SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, chat), child: Text(chat.name))).toList(),
+      ),
+    );
+    if (target != null) await widget.controller.forwardMessage(message, target);
+  }
 }
 
 class DotPatternPainter extends CustomPainter {
@@ -1107,19 +1318,25 @@ class DotPatternPainter extends CustomPainter {
 }
 
 class Composer extends StatelessWidget {
-  const Composer({required this.controller, required this.controllerText, required this.onSent, super.key});
+  const Composer({required this.controller, required this.controllerText, required this.onSent, this.replyingTo, this.onCancelReply, super.key});
   final AppController controller;
   final TextEditingController controllerText;
   final VoidCallback onSent;
+  final MdMessage? replyingTo;
+  final VoidCallback? onCancelReply;
   @override
-  Widget build(BuildContext context) => SafeArea(top: false, child: Padding(padding: const EdgeInsets.fromLTRB(10, 7, 10, 10), child: Row(children: [IconButton(onPressed: controller.pickAndSendAttachment, icon: const Icon(Icons.add_circle_outline_rounded)), Expanded(child: TextField(controller: controllerText, minLines: 1, maxLines: 5, textInputAction: TextInputAction.newline, decoration: const InputDecoration(hintText: 'Write a message…', contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12))),), const SizedBox(width: 5), IconButton.filled(onPressed: () { controller.send(controllerText.text); onSent(); }, icon: const Icon(Icons.arrow_upward_rounded))])));
+  Widget build(BuildContext context) => SafeArea(top: false, child: Padding(padding: const EdgeInsets.fromLTRB(10, 7, 10, 10), child: Column(mainAxisSize: MainAxisSize.min, children: [
+    if (replyingTo != null) Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(dense: true, leading: const Icon(Icons.reply_rounded), title: Text('Replying to ${replyingTo!.author}'), subtitle: Text(replyingTo!.text, maxLines: 1, overflow: TextOverflow.ellipsis), trailing: IconButton(onPressed: onCancelReply, icon: const Icon(Icons.close_rounded)))),
+    Row(children: [IconButton(onPressed: controller.pickAndSendAttachment, icon: const Icon(Icons.add_circle_outline_rounded)), Expanded(child: TextField(controller: controllerText, minLines: 1, maxLines: 5, textInputAction: TextInputAction.newline, decoration: const InputDecoration(hintText: 'Write a message…', contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12))),), const SizedBox(width: 5), IconButton.filled(onPressed: () { controller.send(controllerText.text, replyToMessageId: replyingTo?.telegramId); onSent(); }, icon: const Icon(Icons.arrow_upward_rounded))]),
+  ])));
 }
 
 class MessageBubble extends StatelessWidget {
-  const MessageBubble({required this.message, required this.compact, required this.onMediaTap, super.key});
+  const MessageBubble({required this.message, required this.compact, required this.onMediaTap, required this.onLongPress, super.key});
   final MdMessage message;
   final bool compact;
   final ValueChanged<MdMessage> onMediaTap;
+  final ValueChanged<MdMessage> onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -1145,7 +1362,7 @@ class MessageBubble extends StatelessWidget {
         padding: EdgeInsets.only(bottom: compact ? 5 : 12),
         child: Row(mainAxisAlignment: message.incoming ? MainAxisAlignment.start : MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.end, children: [
           if (message.incoming) Padding(padding: const EdgeInsets.only(right: 7), child: CircleAvatar(radius: 15, backgroundColor: message.color, child: Text(message.initials, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800)))),
-          Flexible(child: Container(
+          Flexible(child: GestureDetector(onLongPress: () => onLongPress(message), child: Container(
             decoration: BoxDecoration(color: color, borderRadius: BorderRadius.only(topLeft: const Radius.circular(20), topRight: const Radius.circular(20), bottomLeft: Radius.circular(message.incoming ? 5 : 20), bottomRight: Radius.circular(message.incoming ? 20 : 5))),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1156,7 +1373,7 @@ class MessageBubble extends StatelessWidget {
                 if (message.reactions.isNotEmpty) ...[const SizedBox(width: 8), Text(message.reactions.join('  '), style: const TextStyle(fontSize: 11))],
               ]),
             ]),
-          )),
+          ))),
         ]),
       ),
     );
@@ -1322,4 +1539,21 @@ class MdMessage {
   final int? mediaFileId;
   final String? mediaKind;
   final String? mediaName;
+
+  MdMessage copyWith({String? text, List<String>? reactions}) => MdMessage(
+        author: author,
+        initials: initials,
+        text: text ?? this.text,
+        time: time,
+        incoming: incoming,
+        color: color,
+        reactions: reactions ?? this.reactions,
+        telegramId: telegramId,
+        audioFileId: audioFileId,
+        audioTitle: audioTitle,
+        audioPerformer: audioPerformer,
+        mediaFileId: mediaFileId,
+        mediaKind: mediaKind,
+        mediaName: mediaName,
+      );
 }

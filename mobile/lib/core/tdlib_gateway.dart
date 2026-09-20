@@ -120,6 +120,14 @@ class TdlibGateway {
 
   Future<Map<String, dynamic>> createPrivateChat(int userId) => request({'@type': 'createPrivateChat', 'user_id': userId, 'force': true});
 
+  Future<void> openChat(int chatId) async {
+    await request({'@type': 'openChat', 'chat_id': chatId});
+  }
+
+  Future<void> closeChat(int chatId) async {
+    await request({'@type': 'closeChat', 'chat_id': chatId});
+  }
+
   Future<void> logOut() async {
     await request({'@type': 'logOut'});
     authState = TdAuthState.waitingPhone;
@@ -170,14 +178,85 @@ class TdlibGateway {
     return List<Map<String, dynamic>>.from(response['messages'] ?? const []);
   }
 
+  Future<List<Map<String, dynamic>>> searchMessages(String query) async {
+    final response = await request({
+      '@type': 'searchMessages',
+      'chat_list': null,
+      'query': query,
+      'from_message_id': 0,
+      'offset': 0,
+      'limit': 50,
+      'filter': null,
+    });
+    return List<Map<String, dynamic>>.from(response['messages'] ?? const []);
+  }
+
   Future<void> markMessagesRead(int chatId, List<int> messageIds) async {
     if (messageIds.isEmpty) return;
     await request({'@type': 'viewMessages', 'chat_id': chatId, 'message_ids': messageIds, 'force_read': false});
   }
 
-  Future<void> sendMessage(int chatId, String text) async {
-    await request({'@type': 'sendMessage', 'chat_id': chatId, 'input_message_content': {'@type': 'inputMessageText', 'text': {'@type': 'formattedText', 'text': text, 'entities': []}}});
+  Future<void> sendTyping(int chatId) async {
+    await request({'@type': 'sendChatAction', 'chat_id': chatId, 'message_thread_id': 0, 'action': {'@type': 'chatActionTyping'}});
   }
+
+  Future<void> sendMessage(int chatId, String text, {int? replyToMessageId, bool disableNotification = false}) async {
+    final payload = <String, dynamic>{
+      '@type': 'sendMessage',
+      'chat_id': chatId,
+      'options': {
+        '@type': 'messageSendOptions',
+        'disable_notification': disableNotification,
+        'from_background': false,
+        'protect_content': false,
+        'update_order_of_installed_sticker_sets': false,
+      },
+      'input_message_content': {'@type': 'inputMessageText', 'text': {'@type': 'formattedText', 'text': text, 'entities': []}},
+    };
+    if (replyToMessageId != null) {
+      payload['reply_to'] = {'@type': 'inputMessageReplyToMessage', 'message_id': replyToMessageId, 'quote': null, 'checklist_task_id': 0};
+    }
+    await request(payload);
+  }
+
+  Future<void> editMessageText(int chatId, int messageId, String text) async => request({
+        '@type': 'editMessageText',
+        'chat_id': chatId,
+        'message_id': messageId,
+        'input_message_content': {'@type': 'inputMessageText', 'text': {'@type': 'formattedText', 'text': text, 'entities': []}},
+      });
+
+  Future<void> deleteMessages(int chatId, List<int> messageIds, {bool revoke = true}) async => request({
+        '@type': 'deleteMessages',
+        'chat_id': chatId,
+        'message_ids': messageIds,
+        'revoke': revoke,
+      });
+
+  Future<void> forwardMessages(int toChatId, int fromChatId, List<int> messageIds) async => request({
+        '@type': 'forwardMessages',
+        'chat_id': toChatId,
+        'from_chat_id': fromChatId,
+        'message_ids': messageIds,
+        'options': {
+          '@type': 'messageSendOptions',
+          'disable_notification': false,
+          'from_background': false,
+          'protect_content': false,
+          'update_order_of_installed_sticker_sets': false,
+        },
+        'send_copy': false,
+        'remove_caption': false,
+      });
+
+  Future<void> setMessageReaction(int chatId, int messageId, String emoji) async => request({
+        '@type': 'setMessageReaction',
+        'chat_id': chatId,
+        'message_id': messageId,
+        'reaction_type': {'@type': 'reactionTypeEmoji', 'emoji': emoji},
+        'is_big': false,
+        'update_recent_reactions': true,
+      });
 
   Future<void> sendLocalFile(int chatId, String path, {String? caption}) async {
     final lowerPath = path.toLowerCase();
