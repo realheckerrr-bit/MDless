@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:tdlib/tdlib.dart';
 
@@ -27,7 +28,11 @@ class TdlibGateway {
       return;
     }
     try {
-      await TdPlugin.initialize();
+      // The tdlib Flutter package ships libtdjson.so under jniLibs, but its
+      // Android plugin does not call System.loadLibrary. Open the packaged
+      // ABI library explicitly instead of looking only in the Flutter process
+      // symbol table (which causes an undefined td_json_client_create symbol).
+      await TdPlugin.initialize(Platform.isAndroid ? 'libtdjson.so' : null);
       _clientId = TdPlugin.instance.tdJsonClientCreate();
       _receiver = Timer.periodic(const Duration(milliseconds: 120), (_) => _receive());
       await request({
