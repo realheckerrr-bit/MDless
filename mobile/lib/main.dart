@@ -288,10 +288,11 @@ class AppController extends ChangeNotifier {
       messages[activeChatId!] = remote.reversed.map((message) {
         final content = message['content'] as Map?;
         final type = content?['@type']?.toString();
-        final audio = type == 'messageAudio' ? content?['audio'] as Map? : null;
-        final audioFile = audio?['audio'] as Map?;
-        final audioId = audioFile?['id'] as int?;
-        final text = type == 'messageText' ? content?['text']?['text']?.toString() ?? '' : audio != null ? '${audio['performer'] ?? ''} ${audio['title'] ?? 'Audio'}'.trim() : 'Telegram attachment';
+        final audio = type == 'messageAudio' && content != null ? content['audio'] as Map? : null;
+        final audioFile = audio == null ? null : audio['audio'] as Map?;
+        final audioId = audioFile == null ? null : audioFile['id'] as int?;
+        final textContent = content == null ? null : content['text'];
+        final text = type == 'messageText' ? (textContent is Map ? textContent['text']?.toString() ?? '' : '') : audio != null ? '${audio['performer'] ?? ''} ${audio['title'] ?? 'Audio'}'.trim() : 'Telegram attachment';
         return MdMessage(author: message['is_outgoing'] == true ? 'You' : activeChat.name, initials: message['is_outgoing'] == true ? 'YO' : activeChat.initials, text: text, time: '', incoming: message['is_outgoing'] != true, color: activeChat.color, audioFileId: audioId, audioTitle: audio?['title']?.toString(), audioPerformer: audio?['performer']?.toString());
       }).toList();
       notifyListeners();
@@ -667,14 +668,46 @@ class MessageBubble extends StatelessWidget {
   final MdMessage message;
   final bool compact;
   final ValueChanged<MdMessage> onAudioTap;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final color = message.incoming ? scheme.surfaceContainerHigh : scheme.primaryContainer;
-    final content = message.audioFileId != null
-        ? InkWell(onTap: () => onAudioTap(message), borderRadius: BorderRadius.circular(14), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.audio_file_rounded, color: scheme.primary), const SizedBox(width: 10), Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(message.audioTitle ?? message.text, style: const TextStyle(fontWeight: FontWeight.w700)), if (message.audioPerformer != null) Text(message.audioPerformer!, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant))]))]))
-        : Text(message.text);
-    return Align(alignment: message.incoming ? Alignment.centerLeft : Alignment.centerRight, child: Padding(padding: EdgeInsets.only(bottom: compact ? 5 : 12), child: Row(mainAxisAlignment: message.incoming ? MainAxisAlignment.start : MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.end, children: [if (message.incoming) Padding(padding: const EdgeInsets.only(right: 7), child: CircleAvatar(radius: 15, backgroundColor: message.color, child: Text(message.initials, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800)))), Flexible(child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.only(topLeft: const Radius.circular(20), topRight: const Radius.circular(20), bottomLeft: Radius.circular(message.incoming ? 5 : 20), bottomRight: Radius.circular(message.incoming ? 20 : 5))), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [content, const SizedBox(height: 4), Row(mainAxisSize: MainAxisSize.min, children: [Text(message.time, style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)), if (message.reactions.isNotEmpty) ...[const SizedBox(width: 8), Text(message.reactions.join('  '), style: const TextStyle(fontSize: 11))]])])))]));
+    final content = message.audioFileId == null
+        ? Text(message.text)
+        : InkWell(
+            onTap: () => onAudioTap(message),
+            borderRadius: BorderRadius.circular(14),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.audio_file_rounded, color: scheme.primary),
+              const SizedBox(width: 10),
+              Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(message.audioTitle ?? message.text, style: const TextStyle(fontWeight: FontWeight.w700)),
+                if (message.audioPerformer != null) Text(message.audioPerformer!, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+              ])),
+            ]),
+          );
+    return Align(
+      alignment: message.incoming ? Alignment.centerLeft : Alignment.centerRight,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: compact ? 5 : 12),
+        child: Row(mainAxisAlignment: message.incoming ? MainAxisAlignment.start : MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.end, children: [
+          if (message.incoming) Padding(padding: const EdgeInsets.only(right: 7), child: CircleAvatar(radius: 15, backgroundColor: message.color, child: Text(message.initials, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800)))),
+          Flexible(child: Container(
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.only(topLeft: const Radius.circular(20), topRight: const Radius.circular(20), bottomLeft: Radius.circular(message.incoming ? 5 : 20), bottomRight: Radius.circular(message.incoming ? 20 : 5))),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              content,
+              const SizedBox(height: 4),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(message.time, style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)),
+                if (message.reactions.isNotEmpty) ...[const SizedBox(width: 8), Text(message.reactions.join('  '), style: const TextStyle(fontSize: 11))],
+              ]),
+            ]),
+          )),
+        ]),
+      ),
+    );
   }
 }
 
