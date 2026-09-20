@@ -555,6 +555,8 @@ class MusicMiniPlayer extends StatelessWidget {
         ),
       );
 
+}
+
 class SavedPage extends StatelessWidget {
   const SavedPage({required this.controller, super.key});
   final AppController controller;
