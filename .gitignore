@@ -5,5 +5,12 @@ dist/
 !.env.example
 .data/
 *.session
+mobile/.dart_tool/
+mobile/build/
+mobile/.packages
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/android/.gradle/
+mobile/android/local.properties
 .DS_Store
 Thumbs.db

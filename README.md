@@ -2,6 +2,12 @@
 
 MDless is a mobile-first Telegram client with an expressive Material 3 interface, a local plugin engine, per-chat appearance settings, and an optional self-hosted MTProto gateway.
 
+The native client is in [`mobile/`](mobile/). The root web/PWA client remains available as a companion/demo shell, but the mobile product is the Flutter app, not the browser page.
+
+## Native mobile build
+
+The Flutter app uses TDLib directly on the device. It includes native mobile navigation, local TDLib storage, Telegram authorization flow, chat history, sending, settings, plugins, dark mode, and per-chat customization. Start with [`mobile/README.md`](mobile/README.md).
+
 ## What works
 
 - PWA shell that can be installed on Android, iOS, and desktop browsers.
