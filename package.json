@@ -1,0 +1,12 @@
+{
+  "name": "mdless",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MDless — an expressive Material 3 Telegram client shell with a plugin-first architecture.",
+  "type": "module",
+  "scripts": {
+    "dev": "python -m http.server 4173",
+    "start": "python -m http.server 4173"
+  },
+  "license": "MIT"
+}
