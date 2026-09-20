@@ -125,6 +125,7 @@ class AppController extends ChangeNotifier {
   String iconPack = 'Material You';
   int? activeCallId;
   String? activeCallState;
+  Map<String, dynamic>? currentUser;
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
@@ -213,7 +214,10 @@ class AppController extends ChangeNotifier {
       await prefs.setString('telegram-api-hash', apiHash.trim());
       await gateway.initialize(apiId: apiId, apiHash: apiHash.trim());
       authMessage = gateway.error ?? 'TDLib is ready — enter your phone number.';
-      if (gateway.authState == TdAuthState.ready) await loadRemoteChats();
+      if (gateway.authState == TdAuthState.ready) {
+        await loadCurrentUser();
+        await loadRemoteChats();
+      }
     } catch (exception) {
       authMessage = exception.toString().replaceFirst('Bad state: ', '');
     } finally {
@@ -294,6 +298,35 @@ class AppController extends ChangeNotifier {
         }));
       notifyListeners();
     } catch (exception) { authMessage = exception.toString(); notifyListeners(); }
+  }
+
+  Future<void> loadCurrentUser() async {
+    if (!gateway.isAuthenticated) return;
+    try {
+      currentUser = await gateway.loadCurrentUser();
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Profile error: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> logOut() async {
+    try {
+      await gateway.logOut();
+      currentUser = null;
+      activeChatId = null;
+      chats
+        ..clear()
+        ..addAll([
+          ChatPreview(id: 1, name: 'MD3 Design Club', initials: 'MD', preview: 'Mira: the new motion spec is feeling ✨', time: '09:42', unread: 4, color: const Color(0xFFFFB7A8), members: '8,240 members'),
+          ChatPreview(id: 2, name: 'Sasha Volkov', initials: 'SV', preview: 'You: Sounds perfect — see you there!', time: '09:17', unread: 0, color: const Color(0xFFD6C7FF), online: true),
+        ]);
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Could not sign out: $exception';
+      notifyListeners();
+    }
   }
 
   Future<void> send(String text) async {
@@ -498,8 +531,18 @@ class AppController extends ChangeNotifier {
       }
     }
     if (update['@type'] == 'updateAuthorizationState') {
-      if (gateway.isAuthenticated) unawaited(loadRemoteChats());
+      if (gateway.isAuthenticated) {
+        unawaited(loadCurrentUser());
+        unawaited(loadRemoteChats());
+      }
       notifyListeners();
+    }
+    if (update['@type'] == 'updateUser') {
+      final user = update['user'];
+      if (user is Map && user['id'] == currentUser?['id']) {
+        currentUser = Map<String, dynamic>.from(user);
+        notifyListeners();
+      }
     }
     if (update['@type'] == 'updateNewMessage') {
       final chatId = update['chat_id'] as int?;
@@ -997,7 +1040,21 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
+    final user = controller.currentUser;
+    final displayName = user == null ? 'Telegram account' : '${user['first_name'] ?? ''} ${user['last_name'] ?? ''}'.trim();
+    final username = user?['usernames'] is Map ? (user?['usernames'] as Map)['active_usernames'] : null;
     return ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 36), children: [
+      Card(child: Padding(padding: const EdgeInsets.all(18), child: Row(children: [
+        CircleAvatar(radius: 28, child: Text(displayName.isEmpty ? '?' : displayName.substring(0, 1).toUpperCase())),
+        const SizedBox(width: 14),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(displayName.isEmpty ? 'Telegram account' : displayName, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          if (username is List && username.isNotEmpty) Text('@${username.first}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+          Text(user == null ? 'Connected through TDLib' : 'Telegram profile', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ])),
+        IconButton(onPressed: controller.loadCurrentUser, icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh profile'),
+      ]))),
+      const SizedBox(height: 16),
       Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Telegram connection', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
         const SizedBox(height: 7),
@@ -1025,6 +1082,8 @@ class _SettingsPageState extends State<SettingsPage> {
       ...controller.plugins.plugins.map((plugin) => Card(child: SwitchListTile(value: plugin.enabled, onChanged: (_) => controller.plugins.toggle(plugin.id), secondary: CircleAvatar(backgroundColor: plugin.accent, child: Text(plugin.icon)), title: Text(plugin.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text(plugin.description)))),
       const SizedBox(height: 16),
       Card(child: ListTile(leading: const Icon(Icons.extension_rounded), title: const Text('Native plugin SDK'), subtitle: const Text('Plugins are compiled Flutter packages registered with PluginEngine. This keeps mobile permissions explicit and safe.'))),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(onPressed: controller.logOut, icon: const Icon(Icons.logout_rounded), label: const Text('Log out of Telegram')),
     ]);
   }
 }

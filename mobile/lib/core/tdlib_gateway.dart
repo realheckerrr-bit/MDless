@@ -105,6 +105,39 @@ class TdlibGateway {
     return chats;
   }
 
+  Future<Map<String, dynamic>> loadCurrentUser() => request({'@type': 'getMe'});
+
+  Future<void> logOut() async {
+    await request({'@type': 'logOut'});
+    authState = TdAuthState.waitingPhone;
+  }
+
+  Future<void> setChatMuted(int chatId, bool muted) async {
+    await request({
+      '@type': 'setChatNotificationSettings',
+      'chat_id': chatId,
+      'notification_settings': {
+        '@type': 'chatNotificationSettings',
+        'use_default_mute_for': false,
+        'mute_for': muted ? 315360000 : 0,
+        'use_default_sound': true,
+        'sound_id': 0,
+        'use_default_show_preview': true,
+        'show_preview': true,
+        'use_default_mute_stories': true,
+        'mute_stories': false,
+        'use_default_story_sound': true,
+        'story_sound_id': 0,
+        'use_default_story_show_preview': true,
+        'story_show_preview': true,
+        'use_default_disable_pinned_message_notifications': true,
+        'disable_pinned_message_notifications': false,
+        'use_default_disable_mention_notifications': true,
+        'disable_mention_notifications': false,
+      },
+    });
+  }
+
   Future<List<Map<String, dynamic>>> loadMessages(int chatId) async {
     final response = await request({'@type': 'getChatHistory', 'chat_id': chatId, 'from_message_id': 0, 'offset': 0, 'limit': 50, 'only_local': false});
     return List<Map<String, dynamic>>.from(response['messages'] ?? const []);
