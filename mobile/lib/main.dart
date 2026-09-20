@@ -10,6 +10,9 @@ import 'core/music_player.dart';
 import 'core/plugin_engine.dart';
 import 'core/tdlib_gateway.dart';
 
+const _bundledTelegramApiId = String.fromEnvironment('TELEGRAM_API_ID');
+const _bundledTelegramApiHash = String.fromEnvironment('TELEGRAM_API_HASH');
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MdlessBootstrap());
@@ -140,9 +143,9 @@ class AppController extends ChangeNotifier {
     await plugins.restore();
     initialized = true;
     notifyListeners();
-    final savedApiId = prefs.getString('telegram-api-id');
-    final savedApiHash = prefs.getString('telegram-api-hash');
-    if (savedApiId != null && savedApiHash != null && savedApiId.isNotEmpty && savedApiHash.isNotEmpty) {
+    final savedApiId = prefs.getString('telegram-api-id') ?? _bundledTelegramApiId;
+    final savedApiHash = prefs.getString('telegram-api-hash') ?? _bundledTelegramApiHash;
+    if (savedApiId.isNotEmpty && savedApiHash.isNotEmpty) {
       await connect(savedApiId, savedApiHash);
     }
   }
@@ -232,6 +235,11 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> authenticatePhone(String phone) async {
+    if (!gateway.isAvailable) {
+      authMessage = 'This build is not connected to a Telegram API client yet. Open Advanced client setup below, or ship with TELEGRAM_API_ID and TELEGRAM_API_HASH.';
+      notifyListeners();
+      return;
+    }
     try {
       await gateway.sendPhone(phone.trim());
       authMessage = 'Code sent. Check Telegram or your SMS messages.';
@@ -647,8 +655,6 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final state = controller.authState;
-    final hasClient = controller.gateway.isAvailable;
-    final needsApi = !hasClient && !controller.connecting;
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -667,17 +673,7 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 8),
                 Text('A native Telegram client with your chats, privacy, and plugins on-device.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.4)),
                 const SizedBox(height: 28),
-                if (needsApi) ...[
-                  _sectionTitle(context, 'Connect to Telegram'),
-                  const SizedBox(height: 10),
-                  Text('Create an API ID and hash at my.telegram.org. They are stored only on this device.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                  const SizedBox(height: 18),
-                  TextField(controller: apiId, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Telegram API ID', prefixIcon: Icon(Icons.numbers_rounded))),
-                  const SizedBox(height: 12),
-                  TextField(controller: apiHash, obscureText: true, decoration: const InputDecoration(labelText: 'Telegram API hash', prefixIcon: Icon(Icons.key_rounded))),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(onPressed: controller.connecting ? null : () => controller.connect(apiId.text, apiHash.text), icon: const Icon(Icons.lock_open_rounded), label: const Text('Continue securely')),
-                ] else if (controller.connecting) ...[
+                if (controller.connecting) ...[
                   const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator())),
                   Text(controller.authMessage, textAlign: TextAlign.center),
                 ] else ...[
@@ -745,6 +741,8 @@ class _LoginPageState extends State<LoginPage> {
         return const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Confirm this login from your other Telegram device.')));
       case TdAuthState.ready:
         return const Center(child: CircularProgressIndicator());
+      case TdAuthState.unavailable:
+        return _normalPhoneStep(context, controller);
       default:
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Text('Telegram needs a connection to continue.', style: Theme.of(context).textTheme.titleMedium),
@@ -752,6 +750,38 @@ class _LoginPageState extends State<LoginPage> {
           FilledButton(onPressed: () => setState(() {}), child: const Text('Try again')),
         ]);
     }
+  }
+
+  Widget _normalPhoneStep(BuildContext context, AppController controller) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    _sectionTitle(context, 'Sign in to Telegram'),
+    const SizedBox(height: 8),
+    const Text('Enter your phone number. Telegram will send a sign-in code to your authorized devices or by SMS.'),
+    const SizedBox(height: 16),
+    TextField(controller: phone, autofocus: true, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone number', hintText: '+1 555 123 4567', prefixIcon: Icon(Icons.phone_rounded))),
+    const SizedBox(height: 16),
+    FilledButton.icon(onPressed: () => controller.authenticatePhone(phone.text), icon: const Icon(Icons.arrow_forward_rounded), label: const Text('Continue')),
+    const SizedBox(height: 8),
+    TextButton.icon(onPressed: () => _showAdvancedSetup(context, controller), icon: const Icon(Icons.tune_rounded), label: const Text('Advanced client setup')),
+  ]);
+
+  Future<void> _showAdvancedSetup(BuildContext context, AppController controller) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Advanced client setup'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Most users should only enter their phone number. A Telegram API ID and hash are required by TDLib and are stored locally.'),
+          const SizedBox(height: 16),
+          TextField(controller: apiId, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'API ID', prefixIcon: Icon(Icons.numbers_rounded))),
+          const SizedBox(height: 10),
+          TextField(controller: apiHash, obscureText: true, decoration: const InputDecoration(labelText: 'API hash', prefixIcon: Icon(Icons.key_rounded))),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () { Navigator.pop(dialogContext); controller.connect(apiId.text, apiHash.text); }, child: const Text('Connect')),
+        ],
+      ),
+    );
   }
 
   Widget _emailStep(AppController controller, bool codeStep) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
