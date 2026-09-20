@@ -798,6 +798,7 @@ class MusicMiniPlayer extends StatelessWidget {
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
         child: ListTile(
           dense: true,
+          onTap: () => showMusicPlayer(context, player),
           leading: const CircleAvatar(child: Icon(Icons.music_note_rounded)),
           title: Text(player.title ?? 'Telegram audio', maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: Text(player.performer ?? 'MDless player', maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -805,6 +806,52 @@ class MusicMiniPlayer extends StatelessWidget {
         ),
       );
 
+}
+
+Future<void> showMusicPlayer(BuildContext context, MusicPlayerController player) => showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => MusicPlayerSheet(player: player),
+    );
+
+class MusicPlayerSheet extends StatelessWidget {
+  const MusicPlayerSheet({required this.player, super.key});
+  final MusicPlayerController player;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final max = player.duration.inMilliseconds > 0 ? player.duration.inMilliseconds.toDouble() : 1.0;
+    final value = player.position.inMilliseconds.clamp(0, max.toInt()).toDouble();
+    return SafeArea(child: Padding(
+      padding: const EdgeInsets.fromLTRB(24, 4, 24, 28),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 112, height: 112, decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: BorderRadius.circular(32)), child: Icon(Icons.music_note_rounded, size: 58, color: scheme.onPrimaryContainer)),
+        const SizedBox(height: 20),
+        Text(player.title ?? 'Telegram audio', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800), maxLines: 1, overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 4),
+        Text(player.performer ?? 'MDless player', style: TextStyle(color: scheme.onSurfaceVariant)),
+        const SizedBox(height: 14),
+        Slider(value: value, max: max, onChanged: player.duration == Duration.zero ? null : (value) => player.seek(Duration(milliseconds: value.round()))),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(_durationText(player.position)), Text(_durationText(player.duration))]),
+        const SizedBox(height: 12),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          IconButton(onPressed: () => player.seek(player.position - const Duration(seconds: 10)), icon: const Icon(Icons.replay_10_rounded), iconSize: 30),
+          const SizedBox(width: 16),
+          IconButton.filled(onPressed: player.loading ? null : player.toggle, icon: Icon(player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded), iconSize: 34),
+          const SizedBox(width: 16),
+          IconButton(onPressed: () => player.seek(player.position + const Duration(seconds: 30)), icon: const Icon(Icons.forward_30_rounded), iconSize: 30),
+        ]),
+      ]),
+    ));
+  }
+
+  String _durationText(Duration value) {
+    final minutes = value.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '${value.inHours > 0 ? '${value.inHours}:' : ''}$minutes:$seconds';
+  }
 }
 
 class CallBanner extends StatelessWidget {
