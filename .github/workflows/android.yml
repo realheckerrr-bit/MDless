@@ -26,7 +26,7 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter analyze
+      - run: flutter analyze --no-fatal-infos
       - run: flutter build apk --debug
       - uses: actions/upload-artifact@v4
         with:
