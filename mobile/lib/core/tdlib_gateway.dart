@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:tdlib/tdlib.dart';
 
-enum TdAuthState { unavailable, waitingParameters, waitingPhone, waitingCode, waitingPassword, waitingRegistration, waitingEmailAddress, waitingEmailCode, waitingOtherDeviceConfirmation, ready, error }
+enum TdAuthState { unavailable, waitingParameters, waitingEncryptionKey, waitingPhone, waitingCode, waitingPassword, waitingRegistration, waitingEmailAddress, waitingEmailCode, waitingOtherDeviceConfirmation, ready, error }
 
 class TdlibGateway {
   TdlibGateway();
@@ -15,6 +15,7 @@ class TdlibGateway {
   int? _clientId;
   Timer? _receiver;
   int _sequence = 0;
+  bool _encryptionKeyCheckSent = false;
   TdAuthState authState = TdAuthState.unavailable;
   String? error;
 
@@ -49,6 +50,7 @@ class TdlibGateway {
       // symbol table (which causes an undefined td_json_client_create symbol).
       await TdPlugin.initialize(Platform.isAndroid ? 'libtdjson.so' : null);
       _clientId = TdPlugin.instance.tdJsonClientCreate();
+      _encryptionKeyCheckSent = false;
       _receiver = Timer.periodic(const Duration(milliseconds: 120), (_) => _receive());
 
       // Android's process working directory is read-only. TDLib expects real
@@ -82,8 +84,19 @@ class TdlibGateway {
         'application_version': '0.1.0',
         'enable_storage_optimizer': true,
       });
+    } catch (exception) {
+      error = exception.toString();
+      authState = TdAuthState.error;
+    }
+  }
+
+  Future<void> _checkDatabaseEncryptionKey() async {
+    try {
+      // TDLib only accepts this request after it emits
+      // authorizationStateWaitEncryptionKey. Sending it immediately after
+      // setTdlibParameters races the state transition on some builds.
       await request({'@type': 'checkDatabaseEncryptionKey', 'encryption_key': ''});
-      authState = TdAuthState.waitingPhone;
+      error = null;
     } catch (exception) {
       error = exception.toString();
       authState = TdAuthState.error;
@@ -347,6 +360,7 @@ class TdlibGateway {
         final type = update['authorization_state']?['@type'];
         authState = switch (type) {
           'authorizationStateWaitTdlibParameters' => TdAuthState.waitingParameters,
+          'authorizationStateWaitEncryptionKey' => TdAuthState.waitingEncryptionKey,
           'authorizationStateWaitPhoneNumber' => TdAuthState.waitingPhone,
           'authorizationStateWaitCode' => TdAuthState.waitingCode,
           'authorizationStateWaitPassword' => TdAuthState.waitingPassword,
@@ -357,6 +371,10 @@ class TdlibGateway {
           'authorizationStateReady' => TdAuthState.ready,
           _ => authState,
         };
+        if (type == 'authorizationStateWaitEncryptionKey' && !_encryptionKeyCheckSent) {
+          _encryptionKeyCheckSent = true;
+          unawaited(_checkDatabaseEncryptionKey());
+        }
       }
       _updates.add(update);
     } catch (_) {
@@ -366,7 +384,9 @@ class TdlibGateway {
 
   Future<void> dispose() async {
     _receiver?.cancel();
+    _receiver = null;
     if (_clientId != null) TdPlugin.instance.tdJsonClientDestroy(_clientId!);
+    _clientId = null;
     await _updates.close();
   }
 }

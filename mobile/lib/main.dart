@@ -920,6 +920,8 @@ class _LoginPageState extends State<LoginPage> {
           const SizedBox(height: 16),
           FilledButton(onPressed: () => controller.registerUser(firstName.text, lastName.text), child: const Text('Create account')),
         ]);
+      case TdAuthState.waitingEncryptionKey:
+        return const Card(child: Padding(padding: EdgeInsets.all(18), child: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Opening your encrypted Telegram database…'))])));
       case TdAuthState.waitingEmailAddress:
         return _emailStep(controller, false);
       case TdAuthState.waitingEmailCode:
