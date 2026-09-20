@@ -376,7 +376,7 @@ class AppController extends ChangeNotifier {
         audioPerformer: payload?['performer']?.toString(),
         mediaFileId: fileId,
         mediaKind: mediaKind,
-        mediaName: type == 'messageDocument' ? payload?['file_name']?.toString() : null,
+        mediaName: type == 'messageDocument' && payload != null ? payload['file_name']?.toString() : null,
       );
     }).toList();
   }
