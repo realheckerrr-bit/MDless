@@ -2,6 +2,20 @@ allprojects { repositories { google(); mavenCentral() } }
 
 rootProject.buildDir = '../build'
 subprojects { project.buildDir = "${rootProject.buildDir}/${project.name}" }
+subprojects { project ->
+    // tdlib 1.6.0 predates AGP 8 and declares its namespace in the library
+    // manifest. Remove that legacy attribute before AGP processes the manifest.
+    if (project.name == 'tdlib') {
+        def tdlibManifest = project.file('src/main/AndroidManifest.xml')
+        if (tdlibManifest.exists()) {
+            def manifestText = tdlibManifest.getText('UTF-8')
+            def legacyPackage = ' package="org.naji.td.tdlib"'
+            if (manifestText.contains(legacyPackage)) {
+                tdlibManifest.write(manifestText.replace(legacyPackage, ''), 'UTF-8')
+            }
+        }
+    }
+}
 subprojects { afterEvaluate { project ->
     if (project.name == 'tdlib' && project.hasProperty('android')) {
         project.android { namespace 'com.mdless.tdlib'; ndkVersion '27.0.12077973' }

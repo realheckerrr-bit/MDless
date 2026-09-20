@@ -266,7 +266,71 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() { composer.dispose(); scroll.dispose(); super.dispose(); }
   @override
-  Widget build(BuildContext context) { final controller = widget.controller; final prefs = controller.customizations[widget.chat.id] ?? const ChatCustomization(); return Scaffold(appBar: AppBar(leading: IconButton(onPressed: widget.onBack, icon: const Icon(Icons.arrow_back_rounded)), titleSpacing: 0, title: Row(children: [Avatar(chat: widget.chat), const SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(widget.chat.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)), Text(widget.chat.online ? 'online now' : (widget.chat.members ?? 'last seen recently'), style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary))])]), actions: [IconButton(onPressed: () => showChatCustomization(context, controller, widget.chat), icon: const Icon(Icons.palette_outlined)), IconButton(onPressed: () {}, icon: const Icon(Icons.more_vert_rounded))]), body: Column(children: [Expanded(child: DecoratedBox(decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface, image: prefs.dottedWallpaper ? const DecorationImage(image: AssetImage('assets/dots.png'), repeat: ImageRepeat.repeat, opacity: .12) : null), child: ListView.builder(controller: scroll, reverse: true, padding: const EdgeInsets.fromLTRB(14, 20, 14, 14), itemCount: controller.activeMessages.length, itemBuilder: (context, index) => MessageBubble(message: controller.activeMessages[controller.activeMessages.length - 1 - index], compact: prefs.compact))),), Composer(controller: controller, controllerText: composer, onSent: () { composer.clear(); WidgetsBinding.instance.addPostFrameCallback((_) { if (scroll.hasClients) scroll.animateTo(0, duration: const Duration(milliseconds: 260), curve: Curves.easeOut); }); })])); }
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final prefs = controller.customizations[widget.chat.id] ?? const ChatCustomization();
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(onPressed: widget.onBack, icon: const Icon(Icons.arrow_back_rounded)),
+        titleSpacing: 0,
+        title: Row(children: [
+          Avatar(chat: widget.chat),
+          const SizedBox(width: 10),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(widget.chat.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+            Text(widget.chat.online ? 'online now' : (widget.chat.members ?? 'last seen recently'), style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary)),
+          ]),
+        ]),
+        actions: [
+          IconButton(onPressed: () => showChatCustomization(context, controller, widget.chat), icon: const Icon(Icons.palette_outlined)),
+          IconButton(onPressed: () {}, icon: const Icon(Icons.more_vert_rounded)),
+        ],
+      ),
+      body: Column(children: [
+        Expanded(
+          child: DecoratedBox(
+            decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface),
+            child: CustomPaint(
+              painter: prefs.dottedWallpaper ? const DotPatternPainter() : null,
+              child: ListView.builder(
+                controller: scroll,
+                reverse: true,
+                padding: const EdgeInsets.fromLTRB(14, 20, 14, 14),
+                itemCount: controller.activeMessages.length,
+                itemBuilder: (context, index) => MessageBubble(
+                  message: controller.activeMessages[controller.activeMessages.length - 1 - index],
+                  compact: prefs.compact,
+                ),
+              ),
+            ),
+          ),
+        ),
+        Composer(controller: controller, controllerText: composer, onSent: () {
+          composer.clear();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (scroll.hasClients) scroll.animateTo(0, duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
+          });
+        }),
+      ]),
+    );
+  }
+}
+
+class DotPatternPainter extends CustomPainter {
+  const DotPatternPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = Colors.black.withValues(alpha: .06);
+    for (var x = 8.0; x < size.width; x += 16) {
+      for (var y = 8.0; y < size.height; y += 16) {
+        canvas.drawCircle(Offset(x, y), 1.2, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant DotPatternPainter oldDelegate) => false;
 }
 
 class Composer extends StatelessWidget {
