@@ -2,6 +2,11 @@ allprojects { repositories { google(); mavenCentral() } }
 
 rootProject.buildDir = '../build'
 subprojects { project.buildDir = "${rootProject.buildDir}/${project.name}" }
+subprojects { afterEvaluate { project ->
+    if (project.name == 'tdlib' && project.hasProperty('android')) {
+        project.android { namespace 'com.mdless.tdlib'; ndkVersion '27.0.12077973' }
+    }
+} }
 subprojects { project.evaluationDependsOn(':app') }
 
 tasks.register('clean', Delete) { delete rootProject.buildDir }

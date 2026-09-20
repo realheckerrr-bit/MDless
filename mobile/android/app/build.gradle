@@ -4,7 +4,7 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
-android { namespace "com.mdless.mobile"; compileSdk flutter.compileSdkVersion; ndkVersion flutter.ndkVersion
+android { namespace "com.mdless.mobile"; compileSdk flutter.compileSdkVersion; ndkVersion "27.0.12077973"
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = JavaVersion.VERSION_17 }
     defaultConfig { applicationId "com.mdless.mobile"; minSdk 23; targetSdk flutter.targetSdkVersion; versionCode 1; versionName "0.1.0" }
