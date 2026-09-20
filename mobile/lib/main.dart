@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -60,8 +59,7 @@ class _MdlessBootstrapState extends State<MdlessBootstrap> {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
-      textTheme: GoogleFonts.googleSansFlexTextTheme(ThemeData(brightness: brightness).textTheme),
-      fontFamily: GoogleFonts.googleSansFlex().fontFamily,
+      fontFamily: 'GoogleSansFlex',
       appBarTheme: AppBarTheme(backgroundColor: scheme.surface, elevation: 0, centerTitle: false),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: scheme.surfaceContainer,
