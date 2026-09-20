@@ -121,6 +121,8 @@ class AppController extends ChangeNotifier {
   String authMessage = 'Sign in with your Telegram account to continue.';
   String emojiStyle = 'Telegram iOS';
   String iconPack = 'Material You';
+  int? activeCallId;
+  String? activeCallState;
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
@@ -331,7 +333,45 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> acceptActiveCall() async {
+    final callId = activeCallId;
+    if (callId == null) return;
+    try {
+      await gateway.acceptCall(callId);
+      authMessage = 'Call connected.';
+    } catch (exception) {
+      authMessage = 'Call error: $exception';
+    }
+    notifyListeners();
+  }
+
+  Future<void> endActiveCall() async {
+    final callId = activeCallId;
+    if (callId == null) return;
+    try {
+      await gateway.discardCall(callId);
+    } catch (exception) {
+      authMessage = 'Call error: $exception';
+    }
+    activeCallId = null;
+    activeCallState = null;
+    notifyListeners();
+  }
+
   void _handleUpdate(Map<String, dynamic> update) {
+    if (update['@type'] == 'updateCall') {
+      final call = update['call'];
+      if (call is Map) {
+        final state = call['state'];
+        activeCallId = call['id'] as int?;
+        activeCallState = state is Map ? state['@type']?.toString() : null;
+        if (activeCallState == 'callStateDiscarded') {
+          activeCallId = null;
+          activeCallState = null;
+        }
+        notifyListeners();
+      }
+    }
     if (update['@type'] == 'updateAuthorizationState') {
       if (gateway.isAuthenticated) unawaited(loadRemoteChats());
       notifyListeners();
@@ -520,7 +560,7 @@ class _MdlessHomeState extends State<MdlessHome> {
         if (controller.activeChatId != null) return ChatPage(controller: controller, chat: controller.activeChat, onBack: controller.clearChat);
         return Scaffold(
           appBar: AppBar(title: Text(tab == 0 ? 'Messages' : tab == 1 ? 'Saved' : 'Settings', style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.5)), actions: [IconButton(onPressed: controller.toggleTheme, icon: Icon(controller.darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded))]),
-          body: IndexedStack(index: tab, children: [ChatsPage(controller: controller), SavedPage(controller: controller), SettingsPage(controller: controller)]),
+          body: Column(children: [if (controller.activeCallId != null) CallBanner(controller: controller), Expanded(child: IndexedStack(index: tab, children: [ChatsPage(controller: controller), SavedPage(controller: controller), SettingsPage(controller: controller)]))]),
           bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [if (controller.music.hasTrack) MusicMiniPlayer(player: controller.music), NavigationBar(selectedIndex: tab, onDestinationSelected: (value) => setState(() => tab = value), destinations: const [NavigationDestination(icon: Icon(Icons.forum_outlined), selectedIcon: Icon(Icons.forum_rounded), label: 'Chats'), NavigationDestination(icon: Icon(Icons.star_border_rounded), selectedIcon: Icon(Icons.star_rounded), label: 'Saved'), NavigationDestination(icon: Icon(Icons.tune_rounded), selectedIcon: Icon(Icons.tune_rounded), label: 'Settings')])]),
         );
       },
@@ -555,6 +595,29 @@ class MusicMiniPlayer extends StatelessWidget {
         ),
       );
 
+}
+
+class CallBanner extends StatelessWidget {
+  const CallBanner({required this.controller, super.key});
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final incoming = controller.activeCallState == 'callStatePending';
+    final connected = controller.activeCallState == 'callStateReady' || controller.activeCallState == 'callStateExchangingKeys';
+    return Material(
+      color: connected ? Theme.of(context).colorScheme.tertiaryContainer : Theme.of(context).colorScheme.primaryContainer,
+      child: SafeArea(top: false, child: ListTile(
+        leading: Icon(connected ? Icons.call_rounded : Icons.ring_volume_rounded),
+        title: Text(incoming ? 'Incoming Telegram call' : connected ? 'Telegram call connected' : 'Telegram call connecting…'),
+        subtitle: Text(controller.activeCallState ?? 'call'),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (incoming) IconButton(onPressed: controller.acceptActiveCall, icon: const Icon(Icons.call_rounded)),
+          IconButton(onPressed: controller.endActiveCall, icon: const Icon(Icons.call_end_rounded)),
+        ]),
+      )),
+    );
+  }
 }
 
 class SavedPage extends StatelessWidget {
