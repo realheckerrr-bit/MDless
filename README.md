@@ -32,6 +32,8 @@ npm start
 
 Open <http://localhost:8787>. The client also works in demo mode with `npm run dev` through Vite.
 
+For a mobile client outside your home network, deploy the gateway with the included `Dockerfile`, expose it through HTTPS, set the gateway token in `.env`, and enter that HTTPS URL plus token in Settings > Account. GitHub Pages hosts only the static PWA; it cannot run the private MTProto session service.
+
 Never commit `.env`, `.data/`, or a `.session` file. The gateway stores the authenticated GramJS session at `.data/telegram.session` with restrictive file permissions. The token protects REST and SSE access. For a public deployment, put the gateway behind HTTPS, authentication, rate limiting, and a private network; do not expose the raw gateway to the internet.
 
 ## Architecture
