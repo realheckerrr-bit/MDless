@@ -131,6 +131,8 @@ class AppController extends ChangeNotifier {
   int? focusedChatId;
   int? activeCallId;
   String? activeCallState;
+  Map<String, dynamic>? activeCall;
+  String? activeCallSignalingData;
   Map<String, dynamic>? currentUser;
 
   Future<void> initialize() async {
@@ -708,6 +710,11 @@ class AppController extends ChangeNotifier {
   Future<void> startVoiceCall(ChatPreview chat) async {
     final userId = chat.userId;
     if (userId == null || !gateway.isAuthenticated) return;
+    if (!gateway.hasCallMediaEngine) {
+      authMessage = 'Telegram call signaling is wired, but this APK still needs the native Telegram calls media engine for microphone audio.';
+      notifyListeners();
+      return;
+    }
     final microphone = await Permission.microphone.request();
     if (!microphone.isGranted) {
       authMessage = 'Microphone permission is required for Telegram calls.';
@@ -726,6 +733,11 @@ class AppController extends ChangeNotifier {
   Future<void> acceptActiveCall() async {
     final callId = activeCallId;
     if (callId == null) return;
+    if (!gateway.hasCallMediaEngine) {
+      authMessage = 'This build can receive Telegram call signaling, but cannot carry call audio yet.';
+      notifyListeners();
+      return;
+    }
     try {
       await gateway.acceptCall(callId);
       authMessage = 'Call connected.';
@@ -745,6 +757,8 @@ class AppController extends ChangeNotifier {
     }
     activeCallId = null;
     activeCallState = null;
+    activeCall = null;
+    activeCallSignalingData = null;
     notifyListeners();
   }
 
@@ -791,13 +805,24 @@ class AppController extends ChangeNotifier {
     if (update['@type'] == 'updateCall') {
       final call = update['call'];
       if (call is Map) {
+        activeCall = Map<String, dynamic>.from(call);
         final state = call['state'];
         activeCallId = call['id'] as int?;
         activeCallState = state is Map ? state['@type']?.toString() : null;
         if (activeCallState == 'callStateDiscarded') {
           activeCallId = null;
           activeCallState = null;
+          activeCall = null;
+          activeCallSignalingData = null;
         }
+        notifyListeners();
+      }
+    }
+    if (update['@type'] == 'updateNewCallSignalingData') {
+      final callId = update['call_id'] as int?;
+      if (callId != null && callId == activeCallId) {
+        activeCallSignalingData = update['data']?.toString();
+        authMessage = 'New Telegram call signaling data received.';
         notifyListeners();
       }
     }
@@ -1172,13 +1197,15 @@ class CallBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final incoming = controller.activeCallState == 'callStatePending';
-    final connected = controller.activeCallState == 'callStateReady' || controller.activeCallState == 'callStateExchangingKeys';
+    final signalingReady = controller.activeCallState == 'callStateReady';
+    final negotiating = controller.activeCallState == 'callStateExchangingKeys';
+    final mediaReady = signalingReady && controller.gateway.hasCallMediaEngine;
     return Material(
-      color: connected ? Theme.of(context).colorScheme.tertiaryContainer : Theme.of(context).colorScheme.primaryContainer,
+      color: mediaReady ? Theme.of(context).colorScheme.tertiaryContainer : Theme.of(context).colorScheme.primaryContainer,
       child: SafeArea(top: false, child: ListTile(
-        leading: Icon(connected ? Icons.call_rounded : Icons.ring_volume_rounded),
-        title: Text(incoming ? 'Incoming Telegram call' : connected ? 'Telegram call connected' : 'Telegram call connecting…'),
-        subtitle: Text(controller.activeCallState ?? 'call'),
+        leading: Icon(mediaReady ? Icons.call_rounded : Icons.ring_volume_rounded),
+        title: Text(incoming ? 'Incoming Telegram call' : mediaReady ? 'Telegram call connected' : signalingReady ? 'Telegram call signaling ready' : 'Telegram call connecting…'),
+        subtitle: Text(mediaReady ? 'Audio is active' : negotiating ? 'Exchanging secure call keys' : controller.gateway.hasCallMediaEngine ? (controller.activeCallState ?? 'call') : 'Native Telegram calls media engine is not bundled'),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           if (incoming) IconButton(onPressed: controller.acceptActiveCall, icon: const Icon(Icons.call_rounded)),
           IconButton(onPressed: controller.endActiveCall, icon: const Icon(Icons.call_end_rounded)),

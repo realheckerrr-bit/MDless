@@ -15,7 +15,7 @@ You can also enter API credentials in Settings. Never commit real credentials or
 
 For a release build that starts already configured for Telegram, add `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` as repository secrets. The Android workflow passes them only as masked build-time defines; the values are never committed to the repository. If the secrets are absent, use Advanced client setup on the login screen.
 
-The app contains the Material 3 Expressive shell, bundled Google Sans Flex typography, TDLib gateway, native Telegram login, settings-based plugin registry, per-chat appearance controls, Telegram audio playback, and private-call initiation with microphone permission. Flutter plugins are compiled into the app; arbitrary downloaded Dart code is intentionally not executed on-device. This keeps plugin permissions reviewable and compatible with Android app sandboxing.
+The app contains the Material 3 Expressive shell, bundled Google Sans Flex typography, TDLib gateway, native Telegram login, settings-based plugin registry, per-chat appearance controls, Telegram audio playback, and TDLib private-call signaling. Flutter plugins are compiled into the app; arbitrary downloaded Dart code is intentionally not executed on-device. This keeps plugin permissions reviewable and compatible with Android app sandboxing. The native Telegram calls media engine is not bundled yet, so the call surface reports signaling state instead of claiming that microphone audio is connected.
 
 ## Local plugin manifests
 

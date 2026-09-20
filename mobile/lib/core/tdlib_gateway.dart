@@ -10,6 +10,19 @@ enum TdAuthState { unavailable, waitingParameters, waitingEncryptionKey, waiting
 class TdlibGateway {
   TdlibGateway();
 
+  static const _databaseEncryptionKeyRequest = 'checkDatabaseEncryptionKey';
+  static const _callProtocol = <String, dynamic>{
+    '@type': 'callProtocol',
+    'udp_p2p': true,
+    'udp_reflector': true,
+    'min_layer': 65,
+    'max_layer': 92,
+    // The actual Telegram call media engine must advertise its supported
+    // tgcalls protocol versions here. An empty list keeps TDLib signaling
+    // valid without pretending that this Flutter shell can carry audio.
+    'library_versions': <String>[],
+  };
+
   final _updates = StreamController<Map<String, dynamic>>.broadcast();
   final _pending = <String, Completer<Map<String, dynamic>>>{};
   int? _clientId;
@@ -22,6 +35,7 @@ class TdlibGateway {
   Stream<Map<String, dynamic>> get updates => _updates.stream;
   bool get isAvailable => _clientId != null;
   bool get isAuthenticated => authState == TdAuthState.ready;
+  bool get hasCallMediaEngine => false;
 
   Future<void> initialize({required int apiId, required String apiHash}) async {
     if (apiId == 0 || apiHash.isEmpty) {
@@ -95,10 +109,10 @@ class TdlibGateway {
       // TDLib only accepts this request after it emits
       // authorizationStateWaitEncryptionKey. Sending it immediately after
       // setTdlibParameters races the state transition on some builds.
-      await request({'@type': 'checkDatabaseEncryptionKey', 'encryption_key': ''});
+      await request({'@type': _databaseEncryptionKeyRequest, 'encryption_key': ''});
       error = null;
     } catch (exception) {
-      error = exception.toString();
+      error = 'TDLib database initialization failed while sending $_databaseEncryptionKeyRequest: $exception';
       authState = TdAuthState.error;
     }
   }
@@ -344,11 +358,31 @@ class TdlibGateway {
   Future<Map<String, dynamic>> createCall({required int userId, bool video = false}) => request({
         '@type': 'createCall',
         'user_id': userId,
-        'protocol': {'@type': 'callProtocol', 'udp_p2p': true, 'udp_reflector': true, 'min_layer': 65, 'max_layer': 92, 'library_versions': []},
+        'protocol': Map<String, dynamic>.from(_callProtocol),
         'is_video': video,
       });
 
-  Future<void> acceptCall(int callId) async => request({'@type': 'acceptCall', 'call_id': callId, 'protocol': {'@type': 'callProtocol', 'udp_p2p': true, 'udp_reflector': true, 'min_layer': 65, 'max_layer': 92, 'library_versions': []}});
+  Future<void> acceptCall(int callId) async => request({'@type': 'acceptCall', 'call_id': callId, 'protocol': Map<String, dynamic>.from(_callProtocol)});
+
+  Future<void> sendCallSignalingData(int callId, String data) async => request({
+        '@type': 'sendCallSignalingData',
+        'call_id': callId,
+        'data': data,
+      });
+
+  Future<void> sendCallDebugInformation(int callId, String debugInformation) async => request({
+        '@type': 'sendCallDebugInformation',
+        'call_id': callId,
+        'debug_information': debugInformation,
+      });
+
+  Future<void> setCallRating(int callId, int rating, {String comment = ''}) async => request({
+        '@type': 'sendCallRating',
+        'call_id': callId,
+        'rating': rating.clamp(1, 5),
+        'comment': comment,
+        'problems': <Map<String, dynamic>>[],
+      });
 
   Future<void> discardCall(int callId) async => request({'@type': 'discardCall', 'call_id': callId, 'is_disconnected': false, 'invite_link': false, 'duration': 0, 'is_video': false, 'connection_id': 0});
 
