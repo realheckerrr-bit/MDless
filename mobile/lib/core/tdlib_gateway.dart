@@ -31,11 +31,21 @@ class TdlibGateway {
   bool _encryptionKeyCheckSent = false;
   TdAuthState authState = TdAuthState.unavailable;
   String? error;
+  List<String> callLibraryVersions = const [];
 
   Stream<Map<String, dynamic>> get updates => _updates.stream;
   bool get isAvailable => _clientId != null;
   bool get isAuthenticated => authState == TdAuthState.ready;
   bool get hasCallMediaEngine => false;
+
+  void setCallLibraryVersions(List<String> versions) {
+    callLibraryVersions = List<String>.unmodifiable(versions);
+  }
+
+  Map<String, dynamic> get _supportedCallProtocol => {
+        ..._callProtocol,
+        'library_versions': callLibraryVersions,
+      };
 
   Future<void> initialize({required int apiId, required String apiHash}) async {
     if (apiId == 0 || apiHash.isEmpty) {
@@ -355,14 +365,24 @@ class TdlibGateway {
     return null;
   }
 
-  Future<Map<String, dynamic>> createCall({required int userId, bool video = false}) => request({
+  Future<Map<String, dynamic>> createCall({required int userId, bool video = false, List<String>? libraryVersions}) => request({
         '@type': 'createCall',
         'user_id': userId,
-        'protocol': Map<String, dynamic>.from(_callProtocol),
+        'protocol': {
+          ..._supportedCallProtocol,
+          'library_versions': libraryVersions ?? callLibraryVersions,
+        },
         'is_video': video,
       });
 
-  Future<void> acceptCall(int callId) async => request({'@type': 'acceptCall', 'call_id': callId, 'protocol': Map<String, dynamic>.from(_callProtocol)});
+  Future<void> acceptCall(int callId, {List<String>? libraryVersions}) async => request({
+        '@type': 'acceptCall',
+        'call_id': callId,
+        'protocol': {
+          ..._supportedCallProtocol,
+          'library_versions': libraryVersions ?? callLibraryVersions,
+        },
+      });
 
   Future<void> sendCallSignalingData(int callId, String data) async => request({
         '@type': 'sendCallSignalingData',

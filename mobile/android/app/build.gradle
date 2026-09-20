@@ -10,4 +10,10 @@ android { namespace "com.mdless.mobile"; compileSdk flutter.compileSdkVersion; n
     defaultConfig { applicationId "com.mdless.mobile"; minSdk 24; targetSdk flutter.targetSdkVersion; versionCode 1; versionName "0.1.0" }
 }
 
+dependencies {
+    // Native Telegram-compatible private-call media transport. TDLib remains
+    // the signaling/authentication layer in Dart.
+    implementation "io.github.pytgcalls:ntgcalls:3.0.0-rc03"
+}
+
 flutter { source '../..' }

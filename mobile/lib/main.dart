@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'core/call_media_engine.dart';
 import 'core/chat_customizations.dart';
 import 'core/music_player.dart';
 import 'core/plugin_engine.dart';
@@ -84,13 +85,15 @@ class _MdlessBootstrapState extends State<MdlessBootstrap> {
 }
 
 class AppController extends ChangeNotifier {
-  AppController() : gateway = TdlibGateway(), plugins = PluginEngine(), music = MusicPlayerController() {
+  AppController() : gateway = TdlibGateway(), plugins = PluginEngine(), music = MusicPlayerController(), calls = CallMediaEngine() {
     music.addListener(notifyListeners);
+    _callMediaUpdates = calls.events.listen(_handleCallMediaEvent);
   }
 
   final TdlibGateway gateway;
   final PluginEngine plugins;
   final MusicPlayerController music;
+  final CallMediaEngine calls;
   final chats = <ChatPreview>[
     ChatPreview(id: 1, name: 'MD3 Design Club', initials: 'MD', preview: 'Mira: the new motion spec is feeling ✨', time: '09:42', unread: 4, color: Color(0xFFFFB7A8), members: '8,240 members'),
     ChatPreview(id: 2, name: 'Sasha Volkov', initials: 'SV', preview: 'You: Sounds perfect — see you there!', time: '09:17', unread: 0, color: Color(0xFFD6C7FF), online: true),
@@ -120,6 +123,7 @@ class AppController extends ChangeNotifier {
 
   final customizations = <int, ChatCustomization>{};
   StreamSubscription<Map<String, dynamic>>? _updates;
+  StreamSubscription<Map<String, dynamic>>? _callMediaUpdates;
   int? activeChatId;
   bool darkMode = false;
   bool initialized = false;
@@ -131,12 +135,17 @@ class AppController extends ChangeNotifier {
   int? focusedChatId;
   int? activeCallId;
   String? activeCallState;
+  String? activeCallMediaState;
+  int? mediaPreparedForCallId;
+  bool callMuted = false;
   Map<String, dynamic>? activeCall;
   String? activeCallSignalingData;
   Map<String, dynamic>? currentUser;
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
+    await calls.initialize();
+    gateway.setCallLibraryVersions(calls.protocolVersions);
     darkMode = prefs.getBool('dark-mode') ?? false;
     emojiStyle = prefs.getString('emoji-style') ?? 'Telegram iOS';
     iconPack = prefs.getString('icon-pack') ?? 'Material You';
@@ -157,6 +166,7 @@ class AppController extends ChangeNotifier {
 
   TdAuthState get authState => gateway.authState;
   bool get signedIn => gateway.isAuthenticated;
+  bool get callMediaAvailable => calls.isAvailable;
 
   List<ChatPreview> get filteredChats => chats.where((chat) {
     final matchesFocus = focusedChatId == null || chat.id == focusedChatId;
@@ -710,8 +720,8 @@ class AppController extends ChangeNotifier {
   Future<void> startVoiceCall(ChatPreview chat) async {
     final userId = chat.userId;
     if (userId == null || !gateway.isAuthenticated) return;
-    if (!gateway.hasCallMediaEngine) {
-      authMessage = 'Telegram call signaling is wired, but this APK still needs the native Telegram calls media engine for microphone audio.';
+    if (!calls.isAvailable) {
+      authMessage = calls.error ?? 'The native Telegram calls media engine is unavailable in this build.';
       notifyListeners();
       return;
     }
@@ -722,7 +732,7 @@ class AppController extends ChangeNotifier {
       return;
     }
     try {
-      await gateway.createCall(userId: userId);
+      await gateway.createCall(userId: userId, libraryVersions: calls.protocolVersions);
       authMessage = 'Calling ${chat.name}…';
     } catch (exception) {
       authMessage = 'Call error: $exception';
@@ -733,14 +743,14 @@ class AppController extends ChangeNotifier {
   Future<void> acceptActiveCall() async {
     final callId = activeCallId;
     if (callId == null) return;
-    if (!gateway.hasCallMediaEngine) {
-      authMessage = 'This build can receive Telegram call signaling, but cannot carry call audio yet.';
+    if (!calls.isAvailable) {
+      authMessage = calls.error ?? 'The native Telegram calls media engine is unavailable in this build.';
       notifyListeners();
       return;
     }
     try {
-      await gateway.acceptCall(callId);
-      authMessage = 'Call connected.';
+      await gateway.acceptCall(callId, libraryVersions: calls.protocolVersions);
+      authMessage = 'Call accepted. Connecting audio…';
     } catch (exception) {
       authMessage = 'Call error: $exception';
     }
@@ -751,6 +761,8 @@ class AppController extends ChangeNotifier {
     final callId = activeCallId;
     if (callId == null) return;
     try {
+      final userId = activeCall?['user_id'] as int?;
+      if (userId != null && calls.isAvailable) await calls.stop(userId: userId);
       await gateway.discardCall(callId);
     } catch (exception) {
       authMessage = 'Call error: $exception';
@@ -759,7 +771,78 @@ class AppController extends ChangeNotifier {
     activeCallState = null;
     activeCall = null;
     activeCallSignalingData = null;
+    activeCallMediaState = null;
+    mediaPreparedForCallId = null;
+    callMuted = false;
     notifyListeners();
+  }
+
+  Future<void> toggleCallMute() async {
+    final userId = activeCall?['user_id'] as int?;
+    if (userId == null || !calls.isAvailable) return;
+    final next = !callMuted;
+    try {
+      await calls.setMuted(userId: userId, muted: next);
+      callMuted = next;
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Could not change microphone state: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _prepareCallMedia(Map<String, dynamic> call) async {
+    final callId = call['id'] as int?;
+    final userId = call['user_id'] as int?;
+    final state = call['state'];
+    if (callId == null || userId == null || state is! Map || state['@type'] != 'callStateReady') return;
+    if (!calls.isAvailable || mediaPreparedForCallId == callId) return;
+    final encryptionKey = state['encryption_key']?.toString();
+    if (encryptionKey == null || encryptionKey.isEmpty) {
+      authMessage = 'Telegram did not provide an encryption key for this call.';
+      notifyListeners();
+      return;
+    }
+    final protocol = state['protocol'];
+    final servers = state['servers'];
+    if (protocol is! Map || servers is! List) return;
+    activeCallMediaState = 'CONNECTING';
+    notifyListeners();
+    try {
+      await calls.prepare(
+        callId: callId,
+        userId: userId,
+        isOutgoing: call['is_outgoing'] == true,
+        encryptionKey: encryptionKey,
+        servers: servers.whereType<Map>().map((server) => Map<String, dynamic>.from(server)).toList(growable: false),
+        protocol: Map<String, dynamic>.from(protocol),
+        allowP2p: state['allow_p2p'] == true,
+        customParameters: state['custom_parameters']?.toString() ?? '{}',
+      );
+      mediaPreparedForCallId = callId;
+    } catch (exception) {
+      activeCallMediaState = 'FAILED';
+      authMessage = 'Telegram call audio could not start: $exception';
+      notifyListeners();
+    }
+  }
+
+  void _handleCallMediaEvent(Map<String, dynamic> event) {
+    final userId = event['userId'] as int?;
+    if (userId == null || userId != activeCall?['user_id']) return;
+    switch (event['@type']) {
+      case 'signalingData':
+        final data = event['data']?.toString();
+        final callId = activeCallId;
+        if (data != null && callId != null) unawaited(gateway.sendCallSignalingData(callId, data));
+        break;
+      case 'connection':
+        activeCallMediaState = event['state']?.toString();
+        if (activeCallMediaState == 'CONNECTED') authMessage = 'Telegram call audio connected.';
+        if (activeCallMediaState == 'FAILED' || activeCallMediaState == 'TIMEOUT') authMessage = 'Telegram call audio connection failed.';
+        notifyListeners();
+        break;
+    }
   }
 
   void _handleUpdate(Map<String, dynamic> update) {
@@ -809,11 +892,14 @@ class AppController extends ChangeNotifier {
         final state = call['state'];
         activeCallId = call['id'] as int?;
         activeCallState = state is Map ? state['@type']?.toString() : null;
+        if (activeCallState == 'callStateReady') unawaited(_prepareCallMedia(activeCall!));
         if (activeCallState == 'callStateDiscarded') {
           activeCallId = null;
           activeCallState = null;
           activeCall = null;
           activeCallSignalingData = null;
+          activeCallMediaState = null;
+          mediaPreparedForCallId = null;
         }
         notifyListeners();
       }
@@ -822,7 +908,10 @@ class AppController extends ChangeNotifier {
       final callId = update['call_id'] as int?;
       if (callId != null && callId == activeCallId) {
         activeCallSignalingData = update['data']?.toString();
-        authMessage = 'New Telegram call signaling data received.';
+        final userId = activeCall?['user_id'] as int?;
+        if (userId != null && calls.isAvailable && activeCallSignalingData != null) {
+          unawaited(calls.sendSignalingData(userId: userId, data: activeCallSignalingData!));
+        }
         notifyListeners();
       }
     }
@@ -903,7 +992,16 @@ class AppController extends ChangeNotifier {
   String _initials(String title) => title.split(RegExp(r'\s+')).take(2).map((part) => part.isEmpty ? '' : part[0]).join().toUpperCase();
 
   @override
-  void dispose() { _updates?.cancel(); music.removeListener(notifyListeners); music.dispose(); gateway.dispose(); plugins.dispose(); super.dispose(); }
+  void dispose() {
+    _updates?.cancel();
+    _callMediaUpdates?.cancel();
+    music.removeListener(notifyListeners);
+    music.dispose();
+    calls.dispose();
+    gateway.dispose();
+    plugins.dispose();
+    super.dispose();
+  }
 }
 
 class LoginPage extends StatefulWidget {
@@ -1199,14 +1297,15 @@ class CallBanner extends StatelessWidget {
     final incoming = controller.activeCallState == 'callStatePending';
     final signalingReady = controller.activeCallState == 'callStateReady';
     final negotiating = controller.activeCallState == 'callStateExchangingKeys';
-    final mediaReady = signalingReady && controller.gateway.hasCallMediaEngine;
+    final mediaReady = signalingReady && controller.activeCallMediaState == 'CONNECTED';
     return Material(
       color: mediaReady ? Theme.of(context).colorScheme.tertiaryContainer : Theme.of(context).colorScheme.primaryContainer,
       child: SafeArea(top: false, child: ListTile(
         leading: Icon(mediaReady ? Icons.call_rounded : Icons.ring_volume_rounded),
         title: Text(incoming ? 'Incoming Telegram call' : mediaReady ? 'Telegram call connected' : signalingReady ? 'Telegram call signaling ready' : 'Telegram call connecting…'),
-        subtitle: Text(mediaReady ? 'Audio is active' : negotiating ? 'Exchanging secure call keys' : controller.gateway.hasCallMediaEngine ? (controller.activeCallState ?? 'call') : 'Native Telegram calls media engine is not bundled'),
+        subtitle: Text(mediaReady ? 'Audio is active' : negotiating ? 'Exchanging secure call keys' : controller.callMediaAvailable ? (controller.activeCallMediaState ?? controller.activeCallState ?? 'call') : 'Native Telegram calls media engine is not bundled'),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (mediaReady) IconButton(onPressed: controller.toggleCallMute, icon: Icon(controller.callMuted ? Icons.mic_off_rounded : Icons.mic_rounded)),
           if (incoming) IconButton(onPressed: controller.acceptActiveCall, icon: const Icon(Icons.call_rounded)),
           IconButton(onPressed: controller.endActiveCall, icon: const Icon(Icons.call_end_rounded)),
         ]),
