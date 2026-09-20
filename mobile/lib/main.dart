@@ -307,13 +307,14 @@ class AppController extends ChangeNotifier {
     if (!gateway.isAvailable || activeChatId == null || gateway.authState != TdAuthState.ready) return;
     try {
       final remote = await gateway.loadMessages(activeChatId!);
-      messages[activeChatId!] = _mapRemoteMessages(remote.reversed);
+      messages[activeChatId!] = _mapRemoteMessages(remote.reversed, chat: activeChat);
       await gateway.markMessagesRead(activeChatId!, remote.map((message) => message['id']).whereType<int>().toList());
       notifyListeners();
     } catch (_) {}
   }
 
-  List<MdMessage> _mapRemoteMessages(Iterable<Map<String, dynamic>> remote) {
+  List<MdMessage> _mapRemoteMessages(Iterable<Map<String, dynamic>> remote, {ChatPreview? chat}) {
+    final conversation = chat ?? activeChat;
     return remote.map((message) {
       final content = message['content'] as Map?;
       final type = content?['@type']?.toString() ?? '';
@@ -365,12 +366,12 @@ class AppController extends ChangeNotifier {
       final authorIsMe = message['is_outgoing'] == true;
       return MdMessage(
         telegramId: message['id'] as int?,
-        author: authorIsMe ? 'You' : activeChat.name,
-        initials: authorIsMe ? 'YO' : activeChat.initials,
+        author: authorIsMe ? 'You' : conversation.name,
+        initials: authorIsMe ? 'YO' : conversation.initials,
         text: text,
         time: _messageTime(message['date']),
         incoming: !authorIsMe,
-        color: activeChat.color,
+        color: conversation.color,
         audioFileId: mediaKind == 'audio' || mediaKind == 'voice' ? fileId : null,
         audioTitle: payload?['title']?.toString(),
         audioPerformer: payload?['performer']?.toString(),
@@ -478,7 +479,49 @@ class AppController extends ChangeNotifier {
       if (gateway.isAuthenticated) unawaited(loadRemoteChats());
       notifyListeners();
     }
-    if (update['@type'] == 'updateNewMessage') { notifyListeners(); }
+    if (update['@type'] == 'updateNewMessage') {
+      final chatId = update['chat_id'] as int?;
+      final message = update['message'];
+      if (chatId != null && message is Map) {
+        final conversationIndex = chats.indexWhere((chat) => chat.id == chatId);
+        if (conversationIndex >= 0) {
+          final conversation = chats[conversationIndex];
+          final typedMessage = Map<String, dynamic>.from(message);
+          final incoming = typedMessage['is_outgoing'] != true;
+          if (activeChatId == chatId) {
+            if (incoming) {
+              messages.putIfAbsent(chatId, () => []).add(_mapRemoteMessages([typedMessage], chat: conversation).single);
+              unawaited(gateway.markMessagesRead(chatId, [typedMessage['id'] as int]));
+            }
+          } else {
+            chats[conversationIndex] = conversation.copyWith(
+              preview: _messagePreview(typedMessage),
+              time: _messageTime(typedMessage['date']),
+              unread: conversation.unread + (incoming ? 1 : 0),
+            );
+          }
+        }
+      }
+      notifyListeners();
+    }
+  }
+
+  String _messagePreview(Map<String, dynamic> message) {
+    final content = message['content'] as Map?;
+    final type = content?['@type']?.toString();
+    if (type == 'messageText') {
+      final text = content?['text'];
+      return text is Map ? text['text']?.toString() ?? 'New message' : 'New message';
+    }
+    return switch (type) {
+      'messagePhoto' => 'Photo',
+      'messageVideo' => 'Video',
+      'messageAudio' => 'Audio',
+      'messageVoiceNote' => 'Voice message',
+      'messageDocument' => 'Document',
+      'messageAnimation' => 'Animation',
+      _ => 'New Telegram message',
+    };
   }
 
   String _initials(String title) => title.split(RegExp(r'\s+')).take(2).map((part) => part.isEmpty ? '' : part[0]).join().toUpperCase();
@@ -985,6 +1028,19 @@ class ChatPreview {
   final String? members;
   final bool online;
   final int? userId;
+
+  ChatPreview copyWith({String? preview, String? time, int? unread}) => ChatPreview(
+        id: id,
+        name: name,
+        initials: initials,
+        preview: preview ?? this.preview,
+        time: time ?? this.time,
+        unread: unread ?? this.unread,
+        color: color,
+        members: members,
+        online: online,
+        userId: userId,
+      );
 }
 
 class MdMessage {
