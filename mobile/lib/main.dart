@@ -110,6 +110,7 @@ class AppController extends ChangeNotifier {
     4: [MdMessage(author: 'You', initials: '✦', text: 'A quiet place for your thoughts.', time: 'Mon', incoming: false, color: Color(0xFFA9EDDD))],
     5: [MdMessage(author: 'Mira Chen', initials: 'MC', text: 'Can you send me that link when you have a second?', time: 'Sun', incoming: true, color: Color(0xFFF8D891))],
   };
+  final searchedMessages = <int, List<MdMessage>>{};
 
   final customizations = <int, ChatCustomization>{};
   StreamSubscription<Map<String, dynamic>>? _updates;
@@ -149,11 +150,30 @@ class AppController extends ChangeNotifier {
 
   List<ChatPreview> get filteredChats => chats.where((chat) => chat.name.toLowerCase().contains(search.toLowerCase()) || chat.preview.toLowerCase().contains(search.toLowerCase())).toList();
   ChatPreview get activeChat => chats.firstWhere((chat) => chat.id == activeChatId);
-  List<MdMessage> get activeMessages => messages[activeChatId] ?? const [];
+  List<MdMessage> get activeMessages => searchedMessages[activeChatId] ?? messages[activeChatId] ?? const [];
 
-  void selectChat(int id) { activeChatId = id; notifyListeners(); }
+  void selectChat(int id) { activeChatId = id; searchedMessages.remove(id); notifyListeners(); }
   void clearChat() { activeChatId = null; notifyListeners(); }
   void setSearch(String value) { search = value; notifyListeners(); }
+
+  Future<void> searchMessages(String query) async {
+    final chatId = activeChatId;
+    if (chatId == null) return;
+    final value = query.trim();
+    if (value.isEmpty) {
+      searchedMessages.remove(chatId);
+      notifyListeners();
+      return;
+    }
+    try {
+      final remote = await gateway.searchChatMessages(chatId, value);
+      searchedMessages[chatId] = _mapRemoteMessages(remote);
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Search error: $exception';
+      notifyListeners();
+    }
+  }
 
   Future<void> toggleTheme() async {
     darkMode = !darkMode;
@@ -287,18 +307,87 @@ class AppController extends ChangeNotifier {
     if (!gateway.isAvailable || activeChatId == null || gateway.authState != TdAuthState.ready) return;
     try {
       final remote = await gateway.loadMessages(activeChatId!);
-      messages[activeChatId!] = remote.reversed.map((message) {
-        final content = message['content'] as Map?;
-        final type = content?['@type']?.toString();
-        final audio = type == 'messageAudio' && content != null ? content['audio'] as Map? : null;
-        final audioFile = audio == null ? null : audio['audio'] as Map?;
-        final audioId = audioFile == null ? null : audioFile['id'] as int?;
-        final textContent = content == null ? null : content['text'];
-        final text = type == 'messageText' ? (textContent is Map ? textContent['text']?.toString() ?? '' : '') : audio != null ? '${audio['performer'] ?? ''} ${audio['title'] ?? 'Audio'}'.trim() : 'Telegram attachment';
-        return MdMessage(author: message['is_outgoing'] == true ? 'You' : activeChat.name, initials: message['is_outgoing'] == true ? 'YO' : activeChat.initials, text: text, time: '', incoming: message['is_outgoing'] != true, color: activeChat.color, audioFileId: audioId, audioTitle: audio?['title']?.toString(), audioPerformer: audio?['performer']?.toString());
-      }).toList();
+      messages[activeChatId!] = _mapRemoteMessages(remote.reversed);
+      await gateway.markMessagesRead(activeChatId!, remote.map((message) => message['id']).whereType<int>().toList());
       notifyListeners();
     } catch (_) {}
+  }
+
+  List<MdMessage> _mapRemoteMessages(Iterable<Map<String, dynamic>> remote) {
+    return remote.map((message) {
+      final content = message['content'] as Map?;
+      final type = content?['@type']?.toString() ?? '';
+      final payload = switch (type) {
+        'messageAudio' => content?['audio'] as Map?,
+        'messageVoiceNote' => content?['voice_note'] as Map?,
+        'messagePhoto' => content?['photo'] as Map?,
+        'messageVideo' => content?['video'] as Map?,
+        'messageDocument' => content?['document'] as Map?,
+        'messageAnimation' => content?['animation'] as Map?,
+        _ => null,
+      };
+      final file = type == 'messagePhoto'
+          ? ((payload?['sizes'] as List?)?.whereType<Map>().isNotEmpty ?? false ? ((payload!['sizes'] as List).last as Map)['photo'] as Map? : null)
+          : payload?[switch (type) {
+              'messageAudio' => 'audio',
+              'messageVoiceNote' => 'voice',
+              'messageVideo' => 'video',
+              'messageDocument' => 'document',
+              'messageAnimation' => 'animation',
+              _ => 'file',
+            }] as Map?;
+      final fileId = file?['id'] as int?;
+      final textContent = content?['text'];
+      final caption = content?['caption'];
+      final captionText = caption is Map ? caption['text']?.toString() : null;
+      final text = type == 'messageText'
+          ? (textContent is Map ? textContent['text']?.toString() ?? '' : '')
+          : captionText?.isNotEmpty == true
+              ? captionText!
+              : switch (type) {
+                  'messageAudio' => '${payload?['performer'] ?? ''} ${payload?['title'] ?? 'Audio'}'.trim(),
+                  'messageVoiceNote' => 'Voice message',
+                  'messagePhoto' => 'Photo',
+                  'messageVideo' => 'Video',
+                  'messageDocument' => payload?['file_name']?.toString() ?? 'Document',
+                  'messageAnimation' => 'Animation',
+                  _ => 'Telegram attachment',
+                };
+      final mediaKind = switch (type) {
+        'messageAudio' => 'audio',
+        'messageVoiceNote' => 'voice',
+        'messagePhoto' => 'photo',
+        'messageVideo' => 'video',
+        'messageDocument' => 'document',
+        'messageAnimation' => 'animation',
+        _ => null,
+      };
+      final authorIsMe = message['is_outgoing'] == true;
+      return MdMessage(
+        telegramId: message['id'] as int?,
+        author: authorIsMe ? 'You' : activeChat.name,
+        initials: authorIsMe ? 'YO' : activeChat.initials,
+        text: text,
+        time: _messageTime(message['date']),
+        incoming: !authorIsMe,
+        color: activeChat.color,
+        audioFileId: mediaKind == 'audio' || mediaKind == 'voice' ? fileId : null,
+        audioTitle: payload?['title']?.toString(),
+        audioPerformer: payload?['performer']?.toString(),
+        mediaFileId: fileId,
+        mediaKind: mediaKind,
+        mediaName: type == 'messageDocument' ? payload?['file_name']?.toString() : null,
+      );
+    }).toList();
+  }
+
+  String _messageTime(Object? epoch) {
+    final seconds = epoch is int ? epoch : 0;
+    if (seconds == 0) return '';
+    final date = DateTime.fromMillisecondsSinceEpoch(seconds * 1000).toLocal();
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
   }
 
   void customize(int chatId, ChatCustomization value) { customizations[chatId] = value; SharedPreferences.getInstance().then((prefs) { prefs.setInt('chat:$chatId:accent', value.accent.value); prefs.setBool('chat:$chatId:compact', value.compact); prefs.setBool('chat:$chatId:dots', value.dottedWallpaper); }); notifyListeners(); }
@@ -311,6 +400,19 @@ class AppController extends ChangeNotifier {
       if (path != null) await music.playFile(id: fileId, path: path, trackTitle: message.audioTitle ?? message.text, trackPerformer: message.audioPerformer);
     } catch (exception) {
       authMessage = 'Audio error: $exception';
+      notifyListeners();
+    }
+  }
+
+  Future<void> downloadMedia(MdMessage message) async {
+    final fileId = message.mediaFileId;
+    if (fileId == null || !gateway.isAuthenticated) return;
+    try {
+      final path = await gateway.downloadFile(fileId);
+      authMessage = path == null ? 'Telegram could not download this file.' : 'Downloaded ${message.text} to the app storage.';
+      notifyListeners();
+    } catch (exception) {
+      authMessage = 'Download error: $exception';
       notifyListeners();
     }
   }
@@ -667,6 +769,7 @@ class _ChatPageState extends State<ChatPage> {
         ]),
         actions: [
           if (widget.chat.userId != null) IconButton(onPressed: () => controller.startVoiceCall(widget.chat), icon: const Icon(Icons.call_outlined)),
+          IconButton(onPressed: () => _searchMessages(context), icon: const Icon(Icons.manage_search_rounded)),
           IconButton(onPressed: () => showChatCustomization(context, controller, widget.chat), icon: const Icon(Icons.palette_outlined)),
           IconButton(onPressed: () {}, icon: const Icon(Icons.more_vert_rounded)),
         ],
@@ -685,7 +788,7 @@ class _ChatPageState extends State<ChatPage> {
                 itemBuilder: (context, index) => MessageBubble(
                   message: controller.activeMessages[controller.activeMessages.length - 1 - index],
                   compact: prefs.compact,
-                  onAudioTap: controller.playAudio,
+                  onMediaTap: (message) => message.audioFileId != null ? controller.playAudio(message) : controller.downloadMedia(message),
                 ),
               ),
             ),
@@ -699,6 +802,23 @@ class _ChatPageState extends State<ChatPage> {
         }),
       ]),
     );
+  }
+
+  Future<void> _searchMessages(BuildContext context) async {
+    final field = TextEditingController();
+    final query = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Search this chat'),
+        content: TextField(controller: field, autofocus: true, textInputAction: TextInputAction.search, decoration: const InputDecoration(hintText: 'Search messages')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, field.text), child: const Text('Search')),
+        ],
+      ),
+    );
+    field.dispose();
+    if (query != null) await widget.controller.searchMessages(query);
   }
 }
 
@@ -729,25 +849,25 @@ class Composer extends StatelessWidget {
 }
 
 class MessageBubble extends StatelessWidget {
-  const MessageBubble({required this.message, required this.compact, required this.onAudioTap, super.key});
+  const MessageBubble({required this.message, required this.compact, required this.onMediaTap, super.key});
   final MdMessage message;
   final bool compact;
-  final ValueChanged<MdMessage> onAudioTap;
+  final ValueChanged<MdMessage> onMediaTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final color = message.incoming ? scheme.surfaceContainerHigh : scheme.primaryContainer;
-    final content = message.audioFileId == null
+    final content = message.mediaFileId == null
         ? Text(message.text)
         : InkWell(
-            onTap: () => onAudioTap(message),
+            onTap: () => onMediaTap(message),
             borderRadius: BorderRadius.circular(14),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.audio_file_rounded, color: scheme.primary),
+              Icon(_mediaIcon(message.mediaKind), color: scheme.primary),
               const SizedBox(width: 10),
               Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(message.audioTitle ?? message.text, style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text(message.mediaName ?? message.audioTitle ?? message.text, style: const TextStyle(fontWeight: FontWeight.w700)),
                 if (message.audioPerformer != null) Text(message.audioPerformer!, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
               ])),
             ]),
@@ -774,6 +894,15 @@ class MessageBubble extends StatelessWidget {
       ),
     );
   }
+
+  IconData _mediaIcon(String? kind) => switch (kind) {
+    'photo' => Icons.image_rounded,
+    'video' => Icons.video_file_rounded,
+    'document' => Icons.description_rounded,
+    'animation' => Icons.gif_box_rounded,
+    'voice' => Icons.mic_rounded,
+    _ => Icons.audio_file_rounded,
+  };
 }
 
 class SettingsPage extends StatefulWidget {
@@ -859,7 +988,7 @@ class ChatPreview {
 }
 
 class MdMessage {
-  MdMessage({required this.author, required this.initials, required this.text, required this.time, required this.incoming, required this.color, this.reactions = const [], this.audioFileId, this.audioTitle, this.audioPerformer});
+  MdMessage({required this.author, required this.initials, required this.text, required this.time, required this.incoming, required this.color, this.reactions = const [], this.telegramId, this.audioFileId, this.audioTitle, this.audioPerformer, this.mediaFileId, this.mediaKind, this.mediaName});
   final String author;
   final String initials;
   final String text;
@@ -867,7 +996,11 @@ class MdMessage {
   final bool incoming;
   final Color color;
   final List<String> reactions;
+  final int? telegramId;
   final int? audioFileId;
   final String? audioTitle;
   final String? audioPerformer;
+  final int? mediaFileId;
+  final String? mediaKind;
+  final String? mediaName;
 }

@@ -110,6 +110,25 @@ class TdlibGateway {
     return List<Map<String, dynamic>>.from(response['messages'] ?? const []);
   }
 
+  Future<List<Map<String, dynamic>>> searchChatMessages(int chatId, String query) async {
+    final response = await request({
+      '@type': 'searchChatMessages',
+      'chat_id': chatId,
+      'query': query,
+      'sender_id': null,
+      'from_message_id': 0,
+      'offset': 0,
+      'limit': 50,
+      'filter': null,
+    });
+    return List<Map<String, dynamic>>.from(response['messages'] ?? const []);
+  }
+
+  Future<void> markMessagesRead(int chatId, List<int> messageIds) async {
+    if (messageIds.isEmpty) return;
+    await request({'@type': 'viewMessages', 'chat_id': chatId, 'message_ids': messageIds, 'force_read': false});
+  }
+
   Future<void> sendMessage(int chatId, String text) async {
     await request({'@type': 'sendMessage', 'chat_id': chatId, 'input_message_content': {'@type': 'inputMessageText', 'text': {'@type': 'formattedText', 'text': text, 'entities': []}}});
   }
