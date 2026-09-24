@@ -5,7 +5,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import io.github.pytgcalls.ConnectionInfo
+import io.github.pytgcalls.NetworkInfo
 import io.github.pytgcalls.NTgCalls
 import io.github.pytgcalls.media.AudioDescription
 import io.github.pytgcalls.media.MediaDescription
@@ -31,11 +31,11 @@ class MainActivity : FlutterActivity() {
                     val protocol = NTgCalls.getProtocol()
                     result.success(
                         mapOf(
-                            "minLayer" to protocol.min_layer,
-                            "maxLayer" to protocol.max_layer,
-                            "udpP2p" to protocol.udp_p2p,
-                            "udpReflector" to protocol.udp_reflector,
-                            "libraryVersions" to protocol.library_versions,
+                            "minLayer" to protocol.minLayer,
+                            "maxLayer" to protocol.maxLayer,
+                            "udpP2p" to protocol.udpP2P,
+                            "udpReflector" to protocol.udpReflector,
+                            "libraryVersions" to protocol.libraryVersions,
                         ),
                     )
                 }
@@ -82,13 +82,12 @@ class MainActivity : FlutterActivity() {
             ?.mapNotNull { it?.toString() }
             ?: emptyList()
         val servers = parseServers(args["servers"] as? List<*>)
-        val customParameters = args["customParameters"]?.toString() ?: "{}"
         val allowP2p = args["allowP2p"] == true
         val devices = NTgCalls.getMediaDevices()
 
         // NTgCalls uses Telegram's user id as the private-call connection key.
         // TDLib's call id remains in Dart for signaling and UI state.
-        engine.createP2pCall(userId)
+        engine.createP2PCall(userId)
         engine.setStreamSources(
             userId,
             StreamMode.CAPTURE,
@@ -110,19 +109,19 @@ class MainActivity : FlutterActivity() {
             ),
         )
         engine.skipExchange(userId, encryptionKey, isOutgoing)
-        engine.connectP2p(userId, servers, versions, allowP2p, customParameters)
+        engine.connectP2P(userId, servers, versions, allowP2p)
     }
 
     private fun ensureCallEngine(): NTgCalls {
         callEngine?.let { return it }
         return NTgCalls().also { engine ->
-            engine.onSignalingData { userId, data ->
+            engine.setSignalingDataCallback { userId, data ->
                 invokeCallEvent(
                     "signalingData",
                     mapOf("userId" to userId, "data" to Base64.encodeToString(data, Base64.NO_WRAP)),
                 )
             }
-            engine.onConnectionChange { userId, state ->
+            engine.setConnectionChangeCallback { userId, state ->
                 invokeCallEvent("connection", connectionEvent(userId, state))
             }
             callEngine = engine
@@ -133,7 +132,7 @@ class MainActivity : FlutterActivity() {
         runOnUiThread { callChannel.invokeMethod(method, arguments) }
     }
 
-    private fun connectionEvent(userId: Long, info: ConnectionInfo): Map<String, Any?> = mapOf(
+    private fun connectionEvent(userId: Long, info: NetworkInfo): Map<String, Any?> = mapOf(
         "userId" to userId,
         "state" to info.state.name,
         "kind" to info.kind.name,
@@ -142,7 +141,7 @@ class MainActivity : FlutterActivity() {
     private fun audioDevice(devices: MediaDevices, capture: Boolean): AudioDescription {
         val list = if (capture) devices.microphone else devices.speaker
         val input = list.firstOrNull()?.metadata ?: ""
-        return AudioDescription(MediaSource.DEVICE, 48000, 2, input, true)
+        return AudioDescription(MediaSource.DEVICE, input, 48000, 2)
     }
 
     private fun parseServers(raw: List<*>?): List<RTCServer> = raw.orEmpty().mapNotNull { value ->
